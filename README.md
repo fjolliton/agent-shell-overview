@@ -140,9 +140,9 @@ error) from the window the shell starts from.
 
 ## Extras
 
-The `extras/` directory holds add-ons built on these extension points, each a
-global minor mode, off until enabled. They are not on the `load-path` of the
-package; add the directory to use them:
+The `extras/` directory holds optional add-ons, crash detection and a memory
+column, each a global minor mode, off until enabled. They are not on the
+`load-path` of the package; add the directory to use them:
 
 ```elisp
 (add-to-list 'load-path
@@ -154,18 +154,8 @@ package; add the directory to use them:
 (agent-shell-overview-memory-mode 1)
 ```
 
-- `agent-shell-overview-crash`: shells whose agent crashed get a Crashed
-  state, or OOM when earlyoom killed it, both asking for attention, with the
-  cause in the tooltip; `M-r` reloads all the crashed shells. A crash is an
-  agent process that died on its own, or a Claude Code process gone from
-  under its agent.
-- `agent-shell-overview-memory`: a Mem column with the memory of each agent,
-  the RSS of its whole process tree.
-
-Both rely on `ps`, so on Linux or a BSD; the OOM detection also needs
-earlyoom under systemd, and is disabled by setting
-`agent-shell-overview-crash-oom-command` to nil. Their Commentary and
-docstrings give the details.
+See [extras/README.md](extras/README.md) for what they do and how to configure
+them.
 
 ## Known limitations
 
