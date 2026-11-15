@@ -31,10 +31,11 @@
 ;; window: the state of each (working, waiting for an answer, done,
 ;; idle), its session title, last activity, idle time and directory.
 ;; Sessions are grouped by project, as project.el finds them, a
-;; worktree under its main project.  From the list, a session can be previewed, jumped to,
-;; interrupted, reloaded, restarted, killed, marked unread or muted.  A
-;; muted session never asks for attention and is listed in a Parked
-;; group of its own.
+;; worktree under its main project, or listed as one, see
+;; `agent-shell-overview-group-by-project' and `G'.  From the list, a
+;; session can be previewed, jumped to, interrupted, reloaded,
+;; restarted, killed, marked unread or muted.  A muted session never
+;; asks for attention and is listed in a Parked group of its own.
 ;;
 ;; At the bottom or top of the frame, the overview is a table; on the
 ;; left or right, a narrow list where each session takes several lines.
@@ -270,6 +271,13 @@ must be the key of a filter of `agent-shell-overview-filters'; another
 value is warned about, and the first filter there applies instead."
   :type 'symbol)
 
+(defcustom agent-shell-overview-group-by-project t
+  "Non-nil to group the rows of the overview by project.
+When nil, the rows form one list, sorted as a whole, with their
+directories in full; the Parked group stays apart.  This is the
+grouping until `agent-shell-overview-toggle-grouping' changes it."
+  :type 'boolean)
+
 (defcustom agent-shell-overview-poll-interval 1
   "Seconds between two polls of the states of the agent shells.
 Polling covers what emits no event, and redraws the overview while it is
@@ -383,12 +391,21 @@ See `agent-shell-overview--tick'.")
 Nil, or a sort neither in `agent-shell-overview-sorts' nor the default
 one, is `agent-shell-overview-default-sort'.")
 
+(defvar agent-shell-overview--grouping nil
+  "The current grouping of the overview: `project', `none', or nil.
+Nil is the one of `agent-shell-overview-group-by-project'.")
+
 (defvar agent-shell-overview--filter nil
   "The key of the current filter in `agent-shell-overview-filters', or nil.
 Nil, or a key no longer there, is `agent-shell-overview-default-filter'.")
 
 (defvar agent-shell-overview--warned nil
   "The (OPTION . VALUE) pairs of the defaults already warned about.")
+
+(defvar agent-shell-overview--sectioned nil
+  "Whether a group header or a row was printed in the drawing yet.
+It is `none' before the first one, t after it, and nil outside of a
+drawing, see `agent-shell-overview--print-entry'.")
 
 (defvar agent-shell-overview--numbered nil
   "The number of shells numbered so far in the drawing of the overview.
@@ -858,6 +875,14 @@ That of a shell is its cwd, see `agent-shell-cwd'."
     (and (buffer-live-p id)
          (with-current-buffer id (agent-shell-cwd)))))
 
+(defun agent-shell-overview--grouped-p ()
+  "Return non-nil if the overview groups its rows by project.
+See `agent-shell-overview-toggle-grouping'."
+  (pcase agent-shell-overview--grouping
+    ('project t)
+    ('none nil)
+    (_ agent-shell-overview-group-by-project)))
+
 (defun agent-shell-overview--group (id)
   "Return the key of the overview group of row ID.
 It is `parked' for a row of the Parked group, see
@@ -870,12 +895,14 @@ directory, see `agent-shell-overview--location'."
 (defun agent-shell-overview--where (id)
   "Return the location the overview shows for row ID.
 It is its directory relative to its project, see
-`agent-shell-overview--location'.  A row of the Parked group is out of
-its project group, so its location is its directory in full,
-abbreviated; it keeps the `agent-shell-overview-worktree' property."
+`agent-shell-overview--location'.  A row out of a project group, in the
+Parked group or when the overview does not group by project, has its
+directory in full, abbreviated; it keeps the
+`agent-shell-overview-worktree' property."
   (if-let* ((directory (agent-shell-overview--directory id)))
       (pcase-let ((`(,project . ,where) (agent-shell-overview--location directory)))
-        (if (or (not (agent-shell-overview--parked-p id))
+        (if (or (and (agent-shell-overview--grouped-p)
+                     (not (agent-shell-overview--parked-p id)))
                 (file-name-absolute-p where))
             where
           (propertize (directory-file-name
@@ -1213,51 +1240,66 @@ followed by the entries of its (STATE . ID) ROWS unless PROJECT is in
   (let ((folded (member (car group) agent-shell-overview--folded)))
     (cons (agent-shell-overview--group-header (car group) (cdr group) folded)
           (unless folded
-            (mapcar (lambda (row)
-                      (list (cdr row) (agent-shell-overview--cells (cdr row) (car row))))
-                    (cdr group))))))
+            (mapcar #'agent-shell-overview--row-entry (cdr group))))))
+
+(defun agent-shell-overview--row-entry (row)
+  "Return the table entry of ROW, a (STATE . ID) pair."
+  (list (cdr row) (agent-shell-overview--cells (cdr row) (car row))))
 
 (defun agent-shell-overview--table ()
   "Return the table entries: the rows the current filter selects, by group.
 The groups and their rows follow the current sort, the Parked group
-last, after a summary line, see `agent-shell-overview--summary'."
+last, after a summary line, see `agent-shell-overview--summary'.  When
+the overview does not group by project, the rows out of the Parked
+group are one list without a header, see
+`agent-shell-overview--grouped-p'."
   (let* ((ids (append (agent-shell-overview-shells)
                       (agent-shell-overview--entries)))
-         (order (let ((table (make-hash-table :test #'eq)))
-                  (seq-do-indexed (lambda (id index) (puthash id index table)) ids)
-                  table))
-         (grouped (seq-group-by (lambda (row) (agent-shell-overview--group (cdr row)))
-                                (mapcar #'agent-shell-overview--row ids)))
+         (grouped (agent-shell-overview--grouped-p))
+         (order (when grouped
+                  (let ((table (make-hash-table :test #'eq)))
+                    (seq-do-indexed (lambda (id index) (puthash id index table)) ids)
+                    table)))
+         (split (seq-group-by (lambda (row) (and (agent-shell-overview--parked-p (cdr row)) t))
+                              (mapcar #'agent-shell-overview--row ids)))
+         (others (cdr (assq nil split)))
          ;; The sort key of each row, computed once.
          (key (let ((keys (make-hash-table :test #'eq)))
                 (lambda (row)
                   (with-memoization (gethash row keys)
                     (agent-shell-overview--sort-key row)))))
-         (parked (agent-shell-overview--select (cdr (assq 'parked grouped)) key))
-         (groups (seq-filter
-                  #'cdr
-                  (mapcar (lambda (group)
-                            (cons (car group)
-                                  (agent-shell-overview--select (cdr group) key)))
-                          (seq-remove (lambda (group) (eq (car group) 'parked))
-                                      grouped))))
-         (lines (mapcan
-                 #'agent-shell-overview--group-entries
-                 (append
-                  ;; A folded group takes its place from the rows it hides,
-                  ;; and a tie goes to the oldest row, shells before entries.
-                  (agent-shell-overview--sort-by
-                   (lambda (group)
-                     (list (if (eq (agent-shell-overview--current-sort) 'name)
-                               (downcase (file-name-nondirectory
-                                          (directory-file-name (car group))))
-                             ;; The first row has the smallest key of its group.
-                             (funcall key (cadr group)))
-                           (seq-min (mapcar (lambda (row) (gethash (cdr row) order))
-                                            (cdr group)))))
-                   groups)
-                  (and parked (list (cons 'parked parked))))))
-         (total (+ (seq-reduce (lambda (sum group) (+ sum (length (cdr group)))) groups 0)
+         (parked (agent-shell-overview--select (cdr (assq t split)) key))
+         (flat (unless grouped (agent-shell-overview--select others key)))
+         (groups (when grouped
+                   (seq-filter
+                    #'cdr
+                    (mapcar (lambda (group)
+                              (cons (car group)
+                                    (agent-shell-overview--select (cdr group) key)))
+                            (seq-group-by (lambda (row) (agent-shell-overview--group (cdr row)))
+                                          others)))))
+         (lines (append
+                 (if grouped
+                     (mapcan
+                      #'agent-shell-overview--group-entries
+                      ;; A folded group takes its place from the rows it
+                      ;; hides, and a tie goes to the oldest row, shells
+                      ;; before entries.
+                      (agent-shell-overview--sort-by
+                       (lambda (group)
+                         (list (if (eq (agent-shell-overview--current-sort) 'name)
+                                   (downcase (file-name-nondirectory
+                                              (directory-file-name (car group))))
+                                 ;; The first row has the smallest key of its group.
+                                 (funcall key (cadr group)))
+                               (seq-min (mapcar (lambda (row) (gethash (cdr row) order))
+                                                (cdr group)))))
+                       groups))
+                   (mapcar #'agent-shell-overview--row-entry flat))
+                 (and parked
+                      (agent-shell-overview--group-entries (cons 'parked parked)))))
+         (total (+ (length flat)
+                   (seq-reduce (lambda (sum group) (+ sum (length (cdr group)))) groups 0)
                    (length parked))))
     (if (or lines (not (eq (nth 2 (agent-shell-overview--current-filter)) t)))
         (cons (agent-shell-overview--line
@@ -1383,11 +1425,30 @@ activity, the other columns and the idle time, ending in a newline."
                                           (or (agent-shell-overview--help id) "")))
                         "\n"))))
 
+(defun agent-shell-overview--separator ()
+  "Return the dashed line between two sections of the overview."
+  (propertize (concat " "
+                      (make-string (max 0 (- (agent-shell-overview--table-width) 2)) ?╌)
+                      "\n")
+              'face 'agent-shell-overview-dim))
+
 (defun agent-shell-overview--print-entry (id cells)
   "Insert the table entry of row ID with CELLS, as a clickable row.
 A live shell among the first ten of the drawing shows its number, and a
 shell shown in a window of the frame has its row tinted.  With a nil ID, insert
 the first cell alone, as a line that is no row."
+  ;; A group header, or a row before any, opens a section, set off by a
+  ;; dashed line from the section above it, and by half a line from the
+  ;; lines above the first one, but not at the top of the buffer.
+  (when (and agent-shell-overview--sectioned
+             (or (and id (eq agent-shell-overview--sectioned 'none))
+                 (and (not id)
+                      (get-text-property 0 'agent-shell-overview-group (aref cells 0)))))
+    (unless (bobp)
+      (insert (if (eq agent-shell-overview--sectioned t)
+                  (agent-shell-overview--separator)
+                (propertize "\n" 'face '(:height 0.5)))))
+    (setq agent-shell-overview--sectioned t))
   (if id
       (let ((start (point))
             (number (and agent-shell-overview--numbered
@@ -1418,21 +1479,6 @@ the first cell alone, as a line that is no row."
                              (list 'mouse-face 'highlight
                                    'keymap agent-shell-overview-row-map
                                    'rear-nonsticky t)))
-    ;; A group header is set off by a dashed line from the group above it,
-    ;; and by half a line from the lines above the first group, but not at
-    ;; the top of the buffer.
-    (when (and (get-text-property 0 'agent-shell-overview-group (aref cells 0))
-               (not (bobp)))
-      (insert (if (text-property-not-all (point-min) (point)
-                                         'agent-shell-overview-group nil)
-                  (propertize
-                   (concat " "
-                           (make-string
-                            (max 0 (- (agent-shell-overview--table-width) 2))
-                            ?╌)
-                           "\n")
-                   'face 'agent-shell-overview-dim)
-                (propertize "\n" 'face '(:height 0.5)))))
     (insert (aref cells 0))))
 
 (defun agent-shell-overview--row-start (id)
@@ -1473,6 +1519,7 @@ on the same line when the row is gone."
         (tabulated-list-init-header)))
     (setq tabulated-list-entries (agent-shell-overview--table))
     (let ((agent-shell-overview--numbered 0)
+          (agent-shell-overview--sectioned 'none)
           (agent-shell-overview--visible
            (mapcar #'window-buffer
                    (window-list (when-let* ((window (agent-shell-overview--window)))
@@ -1496,7 +1543,10 @@ on the same line when the row is gone."
       (if-let* ((header (and (or (buffer-live-p id)
                                  (agent-shell-overview--entry-p id))
                              (let ((project (agent-shell-overview--group id)))
-                               (and (member project agent-shell-overview--folded)
+                               ;; Without project groups, only Parked has a header.
+                               (and (or (eq project 'parked)
+                                        (agent-shell-overview--grouped-p))
+                                    (member project agent-shell-overview--folded)
                                     (agent-shell-overview--header-start project))))))
           (goto-char header)
         (goto-char (point-min))
@@ -1595,10 +1645,31 @@ is no row."
                  (car agent-shell-overview-filters))))
   (agent-shell-overview-refresh)
   (unless (agent-shell-overview-row-at-point)
-    (goto-char (or (text-property-not-all (point-min) (point-max)
-                                          'tabulated-list-id nil)
-                   (point))))
+    (goto-char (or (agent-shell-overview--first-row) (point))))
   (message "Filter: %s" (nth 1 (agent-shell-overview--current-filter))))
+
+(defun agent-shell-overview-toggle-grouping ()
+  "Group the rows of the overview by project, or list them as one.
+The grouping lasts for the session, see
+`agent-shell-overview-group-by-project'.  Point stays on its row.  On
+the header of a project, it goes to the first row of that project in
+the list, or the first row when none is listed; on the header of the
+Parked group, it stays there."
+  (interactive)
+  (let ((header (and (not (agent-shell-overview-row-at-point))
+                     (get-text-property (pos-bol) 'agent-shell-overview-group))))
+    (setq agent-shell-overview--grouping
+          (if (agent-shell-overview--grouped-p) 'none 'project))
+    (agent-shell-overview-refresh)
+    (when header
+      (goto-char (or (agent-shell-overview--header-start header)
+                     (save-excursion
+                       (goto-char (point-min))
+                       (agent-shell-overview--find-row
+                        1 (lambda (id) (equal (agent-shell-overview--group id) header))))
+                     (agent-shell-overview--first-row)
+                     (point)))))
+  (message "Grouping: %s" (if (agent-shell-overview--grouped-p) "by project" "none")))
 
 (defun agent-shell-overview-toggle-fold (&optional all)
   "Fold or unfold the group of the header line at point.
@@ -1828,8 +1899,8 @@ client down.  An entry is removed with its `:kill' function instead, see
 (defun agent-shell-overview-new-in-project ()
   "Start a new agent shell at the project root of the row at point.
 The project is that of the directory of the shell or entry, see
-`agent-shell-overview--directory', and its root the one the row is
-grouped under, see `agent-shell-overview--location'."
+`agent-shell-overview--directory', as `agent-shell-overview--location'
+finds it, whether the overview groups by project or not."
   (interactive)
   (let* ((id (or (agent-shell-overview-row-at-point)
                  (user-error "No agent shell on this line")))
@@ -1952,6 +2023,7 @@ Each item shows the key of its command in the overview."
     "--"
     ["New shell" agent-shell-overview-new]
     ["New shell in project" agent-shell-overview-new-in-project]
+    ["Group by project / list as one" agent-shell-overview-toggle-grouping]
     ["Move to the next side" agent-shell-overview-cycle-side]
     ["Toggle logging" agent-shell-toggle-logging]))
 
@@ -2009,6 +2081,11 @@ A command added here finds its row with
   "C-c C-c" #'agent-shell-overview-interrupt
   "t" #'agent-shell-overview-view-traffic
   "l" #'agent-shell-toggle-logging
+  "G" #'agent-shell-overview-toggle-grouping
+  ;; The column widths come from `agent-shell-overview-columns' at each
+  ;; redraw, so the width commands of `tabulated-list-mode' cannot work.
+  "{" #'undefined
+  "}" #'undefined
   "w" #'agent-shell-overview-cycle-side)
 
 (defun agent-shell-overview--set-layout (layout)
@@ -2021,6 +2098,21 @@ line.  Its lines follow at the next redraw."
     (setq tabulated-list-format (agent-shell-overview--format))
     (tabulated-list-init-header)))
 
+(defun agent-shell-overview--first-row ()
+  "Return the start of the first row of the overview, or nil."
+  (text-property-not-all (point-min) (point-max) 'tabulated-list-id nil))
+
+(defun agent-shell-overview--revert (&rest _)
+  "Redraw the overview, as `agent-shell-overview-refresh' does.
+The value of `revert-buffer-function' in the overview.  When the buffer
+is not in the side window of the overview, it is redrawn as it is.
+`tabulated-list-revert-hook' runs first, as `tabulated-list-revert'
+runs it."
+  (run-hooks 'tabulated-list-revert-hook)
+  (if (agent-shell-overview--window)
+      (agent-shell-overview-refresh)
+    (agent-shell-overview--print)))
+
 (define-derived-mode agent-shell-overview-mode tabulated-list-mode "Agent Shells"
   "Major mode of the overview of the agent shells, see `agent-shell-overview'.
 \\{agent-shell-overview-mode-map}"
@@ -2028,6 +2120,7 @@ line.  Its lines follow at the next redraw."
   ;; with a blank of their own, for its face.
   (setq tabulated-list-padding 2)
   (setq tabulated-list-printer #'agent-shell-overview--print-entry)
+  (setq-local revert-buffer-function #'agent-shell-overview--revert)
   (agent-shell-overview--set-layout 'horizontal))
 
 (defun agent-shell-overview--show (&optional row)
@@ -2069,9 +2162,7 @@ and locations of the directories are found afresh, see
     (agent-shell-overview-refresh)
     (agent-shell-overview--poll-start)
     (unless row
-      (goto-char (or (text-property-not-all (point-min) (point-max)
-                                            'tabulated-list-id nil)
-                     (point-min))))))
+      (goto-char (or (agent-shell-overview--first-row) (point-min))))))
 
 (defun agent-shell-overview--window-here ()
   "Return the side window showing the overview on this frame, or nil."

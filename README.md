@@ -3,7 +3,8 @@
 An overview of the [agent-shell](https://github.com/xenodium/agent-shell)
 sessions, in a side window of Emacs. Each session shows its state (working,
 waiting for an answer, done, idle), title, last activity, idle time and
-directory, grouped by project, with worktrees under their main project.
+directory, grouped by project, with worktrees under their main project, or
+listed as one (`agent-shell-overview-group-by-project`, toggled with `G`).
 From the list, you preview a session, jump to it, interrupt, reload, restart,
 kill, mark it unread or mute it; a muted session never asks for attention and
 moves to a Parked group. The rows of the sessions shown in a window of the
@@ -54,6 +55,7 @@ Any key will do; the author binds `agent-shell-overview` to `F10` and
 | `TAB` / `S-TAB` | Next / previous session asking for attention    |
 | `TAB` on a group | Fold or unfold the group (`S-TAB`: all)        |
 | `S` / `f`     | Cycle the sort / the filter                       |
+| `G`           | Group by project, or list all sessions as one     |
 | `u`           | Mark unread / read                                |
 | `z`           | Mute / unmute                                     |
 | `k`           | Kill                                              |
