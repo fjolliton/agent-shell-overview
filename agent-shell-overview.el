@@ -359,6 +359,10 @@ See `agent-shell-overview-cycle-side'.")
 (defvar-local agent-shell-overview--finished nil
   "Non-nil when a turn of this shell ended and it has not been viewed since.")
 
+(defvar-local agent-shell-overview--restored nil
+  "Non-nil from the replay of a resumed session to the next turn.
+See `agent-shell-overview-activity-known-p'.")
+
 (defvar-local agent-shell-overview-muted nil
   "Non-nil when this agent shell is muted: it never asks for attention.
 The overview lists it in its Parked group.  See
@@ -513,6 +517,7 @@ See `agent-shell-overview--tick'."
 (defun agent-shell-overview--on-turn-end (buffer)
   "Flag agent shell BUFFER as finished unless it is being viewed."
   (when (buffer-live-p buffer)
+    (setf (buffer-local-value 'agent-shell-overview--restored buffer) nil)
     (unless (agent-shell-overview--viewed-p buffer)
       (setf (buffer-local-value 'agent-shell-overview--finished buffer) t))
     (agent-shell-overview--tick)))
@@ -520,6 +525,7 @@ See `agent-shell-overview--tick'."
 (defun agent-shell-overview--on-submit (buffer)
   "Clear the finished flag of agent shell BUFFER, as a new turn starts."
   (when (buffer-live-p buffer)
+    (setf (buffer-local-value 'agent-shell-overview--restored buffer) nil)
     (setf (buffer-local-value 'agent-shell-overview--finished buffer) nil)
     (agent-shell-overview--tick)))
 
@@ -550,11 +556,18 @@ on FRAME, where a shell shown in a window has its row tinted."
       (when (eq (window-frame window) frame)
         (agent-shell-overview-refresh)))))
 
+(defun agent-shell-overview--on-restored (buffer)
+  "Mark the last activity of agent shell BUFFER unknown, as it resumed."
+  (when (buffer-live-p buffer)
+    (setf (buffer-local-value 'agent-shell-overview--restored buffer) t)
+    (agent-shell-overview--tick)))
+
 (defun agent-shell-overview--track ()
   "Register this agent shell, follow its turns and start polling.
 A turn that ends, or fails, while the shell is not viewed flags it as
-finished; a submitted prompt clears the flag.  Polling covers what emits
-no event, such as a question asked by a tool."
+finished; a submitted prompt clears the flag.  The replay of a resumed
+session makes its last activity unknown until the next turn.  Polling
+covers what emits no event, such as a question asked by a tool."
   (add-to-list 'agent-shell-overview--shells (current-buffer) t)
   (unless agent-shell-overview--subscriptions
     (let ((buffer (current-buffer)))
@@ -562,7 +575,8 @@ no event, such as a question asked by a tool."
                      '((input-submitted . agent-shell-overview--on-submit)
                        (turn-complete . agent-shell-overview--on-turn-end)
                        ;; A failed turn ends with `error' rather than `turn-complete'.
-                       (error . agent-shell-overview--on-turn-end)))
+                       (error . agent-shell-overview--on-turn-end)
+                       (session-restored . agent-shell-overview--on-restored)))
         (push (agent-shell-subscribe-to
                :shell-buffer buffer :event event
                :on-event (lambda (_event) (funcall handler buffer)))
@@ -690,11 +704,17 @@ A function that fails adds none, and its error is shown."
     (if (functionp help) (funcall help entry) help)))
 
 (defun agent-shell-overview--help (id)
-  "Return the tooltip of the state of row ID, or nil."
+  "Return the tooltip of the state of row ID, or nil.
+A shell whose last activity is unknown says so, after the help of
+`agent-shell-overview-help-functions'."
   (if (agent-shell-overview--entry-p id)
       (agent-shell-overview--entry-help id)
-    (and (buffer-live-p id)
-         (run-hook-with-args-until-success 'agent-shell-overview-help-functions id))))
+    (when (buffer-live-p id)
+      (let ((help (run-hook-with-args-until-success
+                   'agent-shell-overview-help-functions id))
+            (unknown (and (agent-shell-overview--unknown-p id)
+                          "No turn seen yet: the last activity is unknown.")))
+        (if (and help unknown) (concat help "\n" unknown) (or help unknown))))))
 
 (defun agent-shell-overview--state-spec (state)
   "Return (GLYPH LABEL FACE TITLE-FACE) of STATE.
@@ -709,11 +729,29 @@ and its name."
       (format "%s" (or (plist-get id :title) (plist-get id :id)))
     (agent-shell-overview-title id)))
 
+(defun agent-shell-overview-activity-known-p (buffer)
+  "Return non-nil if the last activity of agent shell BUFFER is known.
+It is not from the replay of a resumed session, signalled by the
+`session-restored' event of agent-shell, to the next turn of the shell:
+agent-shell takes the time of any message of the agent, the replayed
+ones included, and the overview shows no time instead.  A session
+resumed without replay, as with `session/resume', signals no such
+event, so its time is that of the resume."
+  (not (buffer-local-value 'agent-shell-overview--restored buffer)))
+
+(defun agent-shell-overview--unknown-p (id)
+  "Return non-nil if row ID is a shell whose last activity is unknown.
+See `agent-shell-overview-activity-known-p'."
+  (and (bufferp id) (buffer-live-p id)
+       (not (agent-shell-overview-activity-known-p id))))
+
 (defun agent-shell-overview--activity (id)
-  "Return the time of the last activity of row ID, or nil."
-  (if (agent-shell-overview--entry-p id)
-      (plist-get id :time)
-    (ignore-errors (agent-shell-last-activity-time :shell-buffer id))))
+  "Return the time of the last activity of row ID, or nil.
+It is nil while that of a shell is unknown, see
+`agent-shell-overview-activity-known-p'."
+  (cond ((agent-shell-overview--entry-p id) (plist-get id :time))
+        ((agent-shell-overview--unknown-p id) nil)
+        (t (ignore-errors (agent-shell-last-activity-time :shell-buffer id)))))
 
 (defun agent-shell-overview--idle (time)
   "Return the time since TIME, as \"12s\", \"3m\", \"2h\" or \"2d\".
@@ -867,23 +905,30 @@ Its face is that STATE gives its titles, dimmed for a muted shell."
                       (nth 3 (agent-shell-overview--state-spec state)))))
 
 (defun agent-shell-overview-column-activity (id _state)
-  "Return the cell of the time of the last activity of row ID."
-  (propertize (agent-shell-overview--last-activity
-               (agent-shell-overview--activity id))
-              'face 'agent-shell-overview-dim))
+  "Return the cell of the time of the last activity of row ID.
+It is blank while that of a shell is unknown, see
+`agent-shell-overview-activity-known-p'."
+  (if (agent-shell-overview--unknown-p id)
+      ""
+    (propertize (agent-shell-overview--last-activity
+                 (agent-shell-overview--activity id))
+                'face 'agent-shell-overview-dim)))
 
 (defun agent-shell-overview-column-idle (id _state)
   "Return the cell of the time since the last activity of row ID.
-Its face fades from seconds, to minutes, to hours, to days."
+Its face fades from seconds, to minutes, to hours, to days.  It is
+blank while the last activity of a shell is unknown, see
+`agent-shell-overview-activity-known-p'."
   (let ((idle (agent-shell-overview--idle (agent-shell-overview--activity id))))
-    (if (string-empty-p idle)
-        idle
-      (propertize idle 'face
-                  (pcase (aref idle (1- (length idle)))
-                    (?s 'agent-shell-overview-idle-seconds)
-                    (?m 'agent-shell-overview-idle-minutes)
-                    (?h 'agent-shell-overview-idle-hours)
-                    (_ 'agent-shell-overview-idle-days))))))
+    (cond
+     ((agent-shell-overview--unknown-p id) "")
+     ((string-empty-p idle) idle)
+     (t (propertize idle 'face
+                    (pcase (aref idle (1- (length idle)))
+                      (?s 'agent-shell-overview-idle-seconds)
+                      (?m 'agent-shell-overview-idle-minutes)
+                      (?h 'agent-shell-overview-idle-hours)
+                      (_ 'agent-shell-overview-idle-days)))))))
 
 (defun agent-shell-overview-column-where (id _state)
   "Return the cell of the location of row ID, see `agent-shell-overview--where'."
@@ -1114,7 +1159,8 @@ MESSAGE and ARGS format the warning, after the name of OPTION."
 (defun agent-shell-overview--sort-key (row)
   "Return what orders ROW, a (STATE . ID) pair, in the current sort.
 Keys compare with `agent-shell-overview--key<', the smallest first.  A
-row without activity goes after all the others."
+row without activity, or whose activity is unknown, goes after all the
+others."
   (pcase (agent-shell-overview--current-sort)
     ('name (downcase (agent-shell-overview--title-of (cdr row))))
     ('state (or (seq-position (mapcar #'car agent-shell-overview-states) (car row))
