@@ -40,11 +40,12 @@
 ;; - The agent process is no longer live, yet the shell still holds it.
 ;;   A deliberate stop drops it from the shell first, so only a death
 ;;   of its own is taken for a crash.
-;; - The agent was seen with a Claude Code child process, then twice in
-;;   a row without one.  The agent does not start it again, so it
-;;   answers no more, although it still runs.  A periodic `ps' looks for
-;;   that child, see `agent-shell-overview-crash-sample-interval' and
-;;   `agent-shell-overview-crash-claude-command'.
+;; - The agent was seen with a child process of a given command, then
+;;   twice in a row without one.  The agent does not start it again, so
+;;   it answers no more, although it still runs.  A periodic `ps' looks
+;;   for that child, see `agent-shell-overview-crash-sample-interval'
+;;   and `agent-shell-overview-crash-child-command', which can disable
+;;   this check.
 ;;
 ;; Once a crash is seen, a single look in the log of earlyoom, see
 ;; `agent-shell-overview-crash-oom-command', tells whether it killed the
@@ -76,31 +77,45 @@
   :group 'agent-shell-overview
   :prefix "agent-shell-overview-crash-")
 
-(defcustom agent-shell-overview-crash-claude-command
+(defcustom agent-shell-overview-crash-child-command
   "\\`\\.?claude\\(?:-wrapped\\)?\\'"
-  "Regexp matching the command name of the Claude Code process of an agent.
+  "Regexp matching the command name of the child process of an agent, or nil.
 It is matched against the command name `ps' gives of each direct child
-of an agent process."
-  :type 'regexp)
+of an agent process.  An agent seen with such a child, then without one,
+has crashed.
+
+The default matches the Claude Code process that Claude's ACP adapter
+runs as a child, and which it does not start again when it dies: the
+adapter keeps running without answering.  The adapters of other agents
+may run a CLI of their own as a child, which this regexp can match
+instead.  It is a single regexp for every agent: to watch the children
+of several types of agent, it matches all their command names.
+
+Nil disables this check, and the `ps' that samples the processes."
+  :type '(choice (const :tag "No check" nil)
+                 regexp))
 
 (defcustom agent-shell-overview-crash-sample-interval 10
   "Seconds at least between two samples of the processes of the agents.
-A sample looks for the Claude Code process of each agent, see
-`agent-shell-overview-crash-claude-command'."
+A sample looks for the child process of each agent, see
+`agent-shell-overview-crash-child-command'."
   :type 'number)
 
 (defcustom agent-shell-overview-crash-message-regexp
   "Claude Agent process died: \\(.*\\)"
-  "Regexp of the line an agent writes in its shell when Claude Code dies.
+  "Regexp of the line an agent writes in its shell when its child dies.
 Its first group is the cause, which the tooltip of a crashed shell
-tells."
+tells.  The default is the line Claude's ACP adapter writes when its
+Claude Code process dies.  For another agent, it is a regexp of the line
+that agent writes, or the default, which then never matches: the
+tooltip tells the exit status instead."
   :type 'regexp)
 
 (defcustom agent-shell-overview-crash-oom-command
   '("journalctl" "-u" "earlyoom" "-o" "cat" "--no-pager" "--since" "-15min")
   "Command printing the recent log of earlyoom, or nil for no lookup.
 Once a crash is seen, it runs once, and a line of its output telling
-earlyoom sent a signal to the agent or its Claude Code process turns
+earlyoom sent a signal to the agent or its child process turns
 the crash into an `oom' one.  The default is for hosts running earlyoom
 under systemd.  A failure of the command changes nothing."
   :type '(choice (const :tag "No lookup" nil)
@@ -121,13 +136,14 @@ under systemd.  A failure of the command changes nothing."
               ((processp agent)))
     (process-id agent)))
 
-(defvar-local agent-shell-overview-crash--claude-pid nil
-  "The Claude Code process of this shell's agent last seen by a sample, or nil.
-It is (AGENT . CLAUDE), the pids of the agent and of its Claude Code
-process.")
+(defvar-local agent-shell-overview-crash--child-pid nil
+  "The child process of this shell's agent last seen by a sample, or nil.
+It is (AGENT CHILD COMMAND): the pids of the agent and of its child
+process, and the command name of the child.  See
+`agent-shell-overview-crash-child-command'.")
 
-(defvar-local agent-shell-overview-crash--claude-missing nil
-  "Non-nil when the last sample saw this shell's agent without Claude Code.")
+(defvar-local agent-shell-overview-crash--child-missing nil
+  "Non-nil when the last sample saw this shell's agent without its child.")
 
 ;;;; Crashes
 
@@ -135,7 +151,7 @@ process.")
   "How the agent of this shell crashed, or nil while it has not.
 It is (STATE MESSAGE STATUS): STATE is `crashed', or `oom' once earlyoom
 is known to have killed it; MESSAGE is what the agent wrote of the death
-of its Claude Code process, or nil; STATUS is how the death was seen.
+of its child process, or nil; STATUS is how the death was seen.
 Once set, it stays: the agent of a crashed shell answers no more.")
 
 (defconst agent-shell-overview-crash--oom-line
@@ -143,7 +159,7 @@ Once set, it stays: the agent of a crashed shell answers no more.")
   "Regexp of a line of earlyoom killing a process, whose pid is its first group.")
 
 (defun agent-shell-overview-crash--message (buffer)
-  "Return the cause of the last death of Claude Code written in BUFFER, or nil.
+  "Return the cause of the last death of a child written in BUFFER, or nil.
 See `agent-shell-overview-crash-message-regexp'."
   (with-current-buffer buffer
     (save-excursion
@@ -166,7 +182,7 @@ See `agent-shell-overview-crash-message-regexp'."
 (defun agent-shell-overview-crash--record (buffer status pids)
   "Record that the agent of agent shell BUFFER crashed, unless already done.
 STATUS tells how the crash was seen, and PIDS are those of the agent and
-of its Claude Code process, or nil for one unknown.  The crash is
+of its child process, or nil for one unknown.  The crash is
 recorded at once, then `agent-shell-overview-crash-oom-command', unless
 nil, runs once and turns it into `oom' when its output tells earlyoom
 killed one of PIDS.  A failed lookup changes nothing."
@@ -215,12 +231,12 @@ A crash seen by a sample of the processes is returned as well."
     (when (and (processp agent)
                (not (process-live-p agent))
                (not (buffer-local-value 'agent-shell-overview-crash--crash buffer)))
-      (let ((seen (buffer-local-value 'agent-shell-overview-crash--claude-pid buffer))
+      (let ((seen (buffer-local-value 'agent-shell-overview-crash--child-pid buffer))
             (pid (process-id agent)))
         (agent-shell-overview-crash--record
          buffer
          (format "Agent %s %d" (process-status agent) (process-exit-status agent))
-         (list pid (and (eql (car seen) pid) (cdr seen))))))
+         (list pid (and (eql (car seen) pid) (cadr seen))))))
     (car (buffer-local-value 'agent-shell-overview-crash--crash buffer))))
 
 (defun agent-shell-overview-crash--help (buffer)
@@ -242,12 +258,13 @@ A crash seen by a sample of the processes is returned as well."
   "The `ps' process of the running sample of the agent processes, or nil.")
 
 (defun agent-shell-overview-crash--children (output pids)
-  "Return a (PID . CLAUDE) pair for each of PIDS found in OUTPUT.
-CLAUDE is the pid of a direct child of PID whose command name matches
-`agent-shell-overview-crash-claude-command', or nil.  OUTPUT is that of
-\"ps -e -o pid=,ppid=,comm=\", whose command name may hold spaces; the
-lines it does not parse are skipped.  A pid missing from OUTPUT is
-missing from the result."
+  "Return a (PID CHILD COMMAND) list for each of PIDS found in OUTPUT.
+CHILD is the pid of a direct child of PID whose command name, COMMAND,
+matches `agent-shell-overview-crash-child-command'; both are omitted
+when PID has no such child, or when that option is nil.  OUTPUT is
+that of \"ps -e -o pid=,ppid=,comm=\", whose command name may hold
+spaces; the lines it does not parse are skipped.  A pid missing from
+OUTPUT is missing from the result."
   (let ((commands (make-hash-table))
         (children (make-hash-table)))
     (dolist (line (split-string output "\n" t))
@@ -261,53 +278,62 @@ missing from the result."
     (seq-keep
      (lambda (pid)
        (when (gethash pid commands)
-         (cons pid
-               (seq-find (lambda (child)
-                           (string-match-p agent-shell-overview-crash-claude-command
-                                           (gethash child commands "")))
-                         (gethash pid children)))))
+         (let ((child (and agent-shell-overview-crash-child-command
+                           (seq-find
+                            (lambda (child)
+                              (string-match-p agent-shell-overview-crash-child-command
+                                              (gethash child commands "")))
+                            (gethash pid children)))))
+           (if child
+               (list pid child (gethash child commands))
+             (list pid)))))
      pids)))
 
 (defun agent-shell-overview-crash--check-sample (children agents)
   "Record from CHILDREN what a sample tells of the agents of AGENTS.
 CHILDREN is the result of `agent-shell-overview-crash--children', and
 AGENTS the (BUFFER . PID) pairs of the shells sampled.  An agent seen
-with a Claude Code process has its pid remembered; an agent seen without
-one in two samples in a row, once one was seen, has crashed, as the
-agent never starts it again.  A single sample may fall between two
-Claude Code processes, and an agent just started, before its first one,
-is no crash."
+with a child process has its pid remembered; an agent seen without one
+in two samples in a row, once one was seen, has crashed, as the agent
+never starts it again.  A single sample may fall between two child
+processes, and an agent just started, before its first one, is no
+crash."
   (pcase-dolist (`(,buffer . ,pid) agents)
     (when-let* (((buffer-live-p buffer))
                 ((eql pid (agent-shell-overview-crash--agent-pid buffer)))
                 (found (assq pid children)))
-      (let ((claude (cdr found))
-            (seen (buffer-local-value 'agent-shell-overview-crash--claude-pid buffer)))
-        (cond (claude
+      (let ((child (cdr found))
+            (seen (buffer-local-value 'agent-shell-overview-crash--child-pid buffer)))
+        (cond (child
                (with-current-buffer buffer
-                 (setq agent-shell-overview-crash--claude-pid (cons pid claude)
-                       agent-shell-overview-crash--claude-missing nil)))
+                 (setq agent-shell-overview-crash--child-pid found
+                       agent-shell-overview-crash--child-missing nil)))
               ((not (eql (car seen) pid)))
-              ((buffer-local-value 'agent-shell-overview-crash--claude-missing buffer)
+              ((buffer-local-value 'agent-shell-overview-crash--child-missing buffer)
                (agent-shell-overview-crash--record
-                buffer (format "Claude Code process %d gone" (cdr seen))
-                (list pid (cdr seen))))
+                buffer
+                (if (nth 2 seen)
+                    (format "Child process %d (%s) gone" (nth 1 seen) (nth 2 seen))
+                  (format "Child process %d gone" (nth 1 seen)))
+                (list pid (nth 1 seen))))
               (t
                (with-current-buffer buffer
-                 (setq agent-shell-overview-crash--claude-missing t))))))))
+                 (setq agent-shell-overview-crash--child-missing t))))))))
 
 (defun agent-shell-overview-crash--sample ()
   "Start a sample of the processes of the agents, unless one is recent.
-A single `ps' lists every process; once it ends, a Claude Code process
-gone from an agent is recorded as a crash, see
+A single `ps' lists every process; once it ends, a child process gone
+from an agent is recorded as a crash, see
 `agent-shell-overview-crash--check-sample', and the overview is
 redrawn.  A sample starts at most every
-`agent-shell-overview-crash-sample-interval' seconds, and never while
-one runs.  A failed sample changes nothing.  Never signals, as it runs
-from a timer and a sentinel."
+`agent-shell-overview-crash-sample-interval' seconds, never while one
+runs, and never while `agent-shell-overview-crash-child-command' is
+nil.  A failed sample changes nothing.  Never signals, as it runs from
+a timer and a sentinel."
   (ignore-errors
     (let ((now (float-time)))
-      (unless (or (process-live-p agent-shell-overview-crash--sample-process)
+      (unless (or (null agent-shell-overview-crash-child-command)
+                  (process-live-p agent-shell-overview-crash--sample-process)
                   (and agent-shell-overview-crash--sample-started
                        (< (- now agent-shell-overview-crash--sample-started)
                           agent-shell-overview-crash-sample-interval)))
@@ -466,8 +492,8 @@ A crashed shell is in the `crashed' state, or `oom' when earlyoom killed
 its agent, see `agent-shell-overview-crash-oom-command'.  Both ask for
 attention before the other states, and the tooltip of the row tells the
 cause.  An agent has crashed when its process died on its own, or when
-its Claude Code process is gone, see
-`agent-shell-overview-crash-claude-command'.
+its child process is gone, see
+`agent-shell-overview-crash-child-command'.
 
 \\<agent-shell-overview-mode-map>\\[agent-shell-overview-crash-reload-all] \
 in the overview, also in its menu, restarts the agents of all the
