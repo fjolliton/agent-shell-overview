@@ -162,10 +162,11 @@ session takes several lines, without column titles, or one line in
 compact mode, see `agent-shell-overview-compact'."
   :type '(choice (const bottom) (const top) (const left) (const right)))
 
-(defcustom agent-shell-overview-vertical-width 39
-  "Width of the overview on the left or right side, in columns.
-Its window has one more: without fringes, a line that reaches the last
-column of a window loses it to the truncation glyph."
+(defcustom agent-shell-overview-vertical-width 40
+  "Width of the window of the overview on the left or right side, in columns.
+Its lines stop one column short of the edge: without fringes, a line
+that reaches the last column of a window loses it to the truncation
+glyph."
   :type 'natnum)
 
 (defcustom agent-shell-overview-compact nil
@@ -1068,10 +1069,10 @@ column, which a fallback font may draw, do not push TEXT past END."
 
 (defun agent-shell-overview--table-width ()
   "Return the width of the overview table in columns.
-It is `agent-shell-overview-vertical-width' in the vertical layout, and
-that of the selected window in the horizontal one."
+It is one less than `agent-shell-overview-vertical-width' in the
+vertical layout, and that of the selected window in the horizontal one."
   (if (eq agent-shell-overview--layout 'vertical)
-      agent-shell-overview-vertical-width
+      (1- agent-shell-overview-vertical-width)
     (window-max-chars-per-line)))
 
 ;; `tabulated-list-mode-map' makes mouse-1 on a `mouse-face' follow a link,
@@ -1406,7 +1407,7 @@ time."
                ;; The lines stop one column short of the edge, as the parent
                ;; directory of the header does.
                (indent "     ")
-               (width (- agent-shell-overview-vertical-width (length indent) 1))
+               (width (- agent-shell-overview-vertical-width (length indent) 2))
                ;; The last activity fills a column of 16; each other column
                ;; is right-aligned in its width plus 3.
                (used 16)
@@ -2206,7 +2207,7 @@ and locations of the directories are found afresh, see
         (slot . 0)
         (dedicated . t)
         ,@(if vertical
-              `((window-width . (body-columns . ,(1+ agent-shell-overview-vertical-width)))
+              `((window-width . (body-columns . ,agent-shell-overview-vertical-width))
                 (preserve-size . (t . nil)))
             '((window-height . agent-shell-overview--fit)
               (preserve-size . (nil . t)))))))

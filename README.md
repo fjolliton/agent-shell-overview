@@ -79,7 +79,7 @@ the session.
 | Option                                  | Default       | What it sets                                         |
 |-----------------------------------------|---------------|------------------------------------------------------|
 | `agent-shell-overview-side`             | `bottom`      | Side the overview opens on (`w` cycles it)           |
-| `agent-shell-overview-vertical-width`   | `39`          | Width of the overview on the left or right side      |
+| `agent-shell-overview-vertical-width`   | `40`          | Width of the overview on the left or right side      |
 | `agent-shell-overview-compact`          | `nil`         | One line per session on the side (`C` toggles it)    |
 | `agent-shell-overview-group-by-project` | `t`           | Rows grouped by project, or one list (`G`)           |
 | `agent-shell-overview-default-sort`     | `age`         | Sort the overview starts with (`S` cycles it)        |
