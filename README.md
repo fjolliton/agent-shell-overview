@@ -96,7 +96,8 @@ The columns (`agent-shell-overview-columns`) and the states
 
 States, columns and extra rows are open to extensions; see the Commentary of
 `agent-shell-overview.el` and the docstrings of the variables below. For
-example, a state of your own and a column:
+example, a state of your own and a column (complete versions of both are in
+[`extras/`](#extras)):
 
 ```elisp
 (add-hook 'agent-shell-overview-state-functions
@@ -116,6 +117,55 @@ Projects come from project.el, so `.project` files and `project-find-functions`
 apply; `agent-shell-overview-worktree-functions` lifts a worktree to its main
 project (git worktrees, also of bare repositories, by default).
 
+A built-in command can be varied by binding the variables it reads. This `N`
+starts a fresh Claude Code session in the project of the row at point, without
+any prompt:
+
+```elisp
+(defun my-new-in-project ()
+  "Start a fresh Claude Code session in the project of the row at point."
+  (interactive)
+  (let ((agent-shell-preferred-agent-config 'claude-code)
+        (agent-shell-session-strategy 'new)
+        (agent-shell-context-sources nil))
+    (agent-shell-overview-new-in-project)))
+
+(keymap-set agent-shell-overview-mode-map "N" #'my-new-in-project)
+```
+
+`agent-shell-preferred-agent-config` picks the agent without asking,
+`agent-shell-session-strategy` set to `new` never offers to resume a session,
+and `agent-shell-context-sources` set to nil takes no context (file, region,
+error) from the window the shell starts from.
+
+## Extras
+
+The `extras/` directory holds add-ons built on these extension points, each a
+global minor mode, off until enabled. They are not on the `load-path` of the
+package; add the directory to use them:
+
+```elisp
+(add-to-list 'load-path
+             (expand-file-name "extras" (file-name-directory
+                                         (locate-library "agent-shell-overview"))))
+(require 'agent-shell-overview-crash)
+(agent-shell-overview-crash-mode 1)
+(require 'agent-shell-overview-memory)
+(agent-shell-overview-memory-mode 1)
+```
+
+- `agent-shell-overview-crash`: shells whose agent crashed get a Crashed
+  state, or OOM when earlyoom killed it, both asking for attention, with the
+  cause in the tooltip; `M-r` reloads all the crashed shells. A crash is an
+  agent process that died on its own, or a Claude Code process gone from
+  under its agent.
+- `agent-shell-overview-memory`: a Mem column with the memory of each agent,
+  the RSS of its whole process tree.
+
+Both rely on `ps`, so on Linux or a BSD; the OOM detection also needs
+earlyoom under systemd, and is disabled by setting
+`agent-shell-overview-crash-oom-command` to nil. Their Commentary and
+docstrings give the details.
 
 ## Known limitations
 
