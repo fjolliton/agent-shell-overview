@@ -93,6 +93,23 @@ apply; `agent-shell-overview-worktree-functions` lifts a worktree to its main
 project (git worktrees, also of bare repositories, by default).
 
 
+## Known limitations
+
+- A turn the agent starts on its own, without a prompt from you, shows as
+  Idle while it runs and is never marked Done: agent-shell reports a shell as
+  busy only while a prompt is in progress.
+- Questions from the agent (permissions, elicitations) emit no event; the
+  overview sees them on its next poll, within a second.
+- A session restored without replaying its history (agent-shell's default
+  `minimal` restore, with agents supporting `session/resume`) shows the time
+  of its restore as its last activity.
+- Worktrees are grouped under their main project for git only; other version
+  control systems need a function on `agent-shell-overview-worktree-functions`.
+- The overview redraws only in its side window: shown in an ordinary window,
+  it doesn't follow `G`, `S` or `f` until it is back in its panel.
+- The session title is read from agent-shell's internal state; if that
+  changes upstream, the overview falls back to the buffer name.
+
 ## Authorship
 
 This package was written by Claude, Anthropic's AI model, on behalf of
