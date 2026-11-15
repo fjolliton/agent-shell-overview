@@ -9,7 +9,8 @@ From the list, you preview a session, jump to it, interrupt, reload, restart,
 kill, mark it unread or mute it; a muted session never asks for attention and
 moves to a Parked group. The rows of the sessions shown in a window of the
 frame are tinted. At the bottom or top of the frame the overview is a table; on the left
-or right, a narrow list.
+or right, a narrow list, with one line per session in compact mode
+(`agent-shell-overview-compact`, toggled with `C`).
 
 Horizontal layout (a panel at the top or bottom of the frame):
 
@@ -56,6 +57,7 @@ Any key will do; the author binds `agent-shell-overview` to `F10` and
 | `TAB` on a group | Fold or unfold the group (`S-TAB`: all)        |
 | `S` / `f`     | Cycle the sort / the filter                       |
 | `G`           | Group by project, or list all sessions as one     |
+| `C`           | One line per session on the side, or several      |
 | `u`           | Mark unread / read                                |
 | `z`           | Mute / unmute                                     |
 | `k`           | Kill                                              |
