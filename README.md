@@ -70,6 +70,28 @@ Any key will do; the author binds `agent-shell-overview` to `F10` and
 | `g` / `q`     | Refresh / close                                   |
 | `mouse-1` / `mouse-3` | Show the session / context menu           |
 
+## Customization
+
+`M-x customize-group RET agent-shell-overview` lists every option; their
+docstrings give the details. The keys in parentheses change the setting for
+the session.
+
+| Option                                  | Default       | What it sets                                         |
+|-----------------------------------------|---------------|------------------------------------------------------|
+| `agent-shell-overview-side`             | `bottom`      | Side the overview opens on (`w` cycles it)           |
+| `agent-shell-overview-vertical-width`   | `39`          | Width of the overview on the left or right side      |
+| `agent-shell-overview-compact`          | `nil`         | One line per session on the side (`C` toggles it)    |
+| `agent-shell-overview-group-by-project` | `t`           | Rows grouped by project, or one list (`G`)           |
+| `agent-shell-overview-default-sort`     | `age`         | Sort the overview starts with (`S` cycles it)        |
+| `agent-shell-overview-sorts`            | all four      | Sorts `S` cycles through: age, name, state, activity |
+| `agent-shell-overview-default-filter`   | `all`         | Filter the overview starts with (`f` cycles it)      |
+| `agent-shell-overview-filters`          | four          | Filters `f` cycles through, each a set of states     |
+| `agent-shell-overview-attention-states` | blocked, done | States that ask for attention (`TAB` stops there)    |
+| `agent-shell-overview-poll-interval`    | `1`           | Seconds between two polls of the shells' states      |
+
+The columns (`agent-shell-overview-columns`) and the states
+(`agent-shell-overview-states`) are options too; see Extending below.
+
 ## Extending
 
 States, columns and extra rows are open to extensions; see the Commentary of
