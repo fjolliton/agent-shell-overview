@@ -76,6 +76,13 @@
 ;; - `agent-shell-overview-worktree-functions' tells the main project of
 ;;   a worktree, for git by default.  The projects themselves come from
 ;;   project.el, so `project-find-functions' and its markers apply.
+;; - `agent-shell-overview-directory-functions' tells where a shell
+;;   works when that is not its cwd, such as a worktree its session
+;;   entered.
+;; - `agent-shell-overview-detail-functions' adds text to the location
+;;   of a row, such as the branch or pull request of its checkout.
+;; - A segment of a cell with an `agent-shell-overview-action' property
+;;   runs that function when clicked, instead of going to the shell.
 ;; - New commands go in `agent-shell-overview-mode-map' and
 ;;   `agent-shell-overview-menu', and find their row with
 ;;   `agent-shell-overview-row-at-point'.
@@ -351,6 +358,45 @@ name, and returns the root of the main project when that root is a
 linked worktree, or the like in another version control system, and
 nil otherwise.  The first non-nil result counts: the worktree is listed
 in the group of the main project, with a worktree mark.  An error in a
+function is shown as a message, and the next functions still run."
+  :type 'hook)
+
+;; Read through `agent-shell-overview--directory', at every redraw.
+(defcustom agent-shell-overview-directory-functions nil
+  "Functions telling the directory an agent shell works in.
+Each is called with a live agent shell buffer, and returns a directory
+or nil.  The first non-nil result is the directory of the row of the
+shell, and otherwise its cwd, see `agent-shell-cwd'.  It gives the
+project group of the row and its location, with the worktree mark in a
+linked worktree, see `agent-shell-overview-worktree-functions'.  The
+shell itself keeps its cwd: the commands that start a shell do not use
+it.  The functions run at every redraw, once a second for each row, so
+they must only read what is already known, not run processes or read
+files.  An error in a function is shown as a message, and the next
+functions still run."
+  :type 'hook)
+
+(defcustom agent-shell-overview-detail-functions nil
+  "Functions adding text to the location of a row.
+Each is called with the id of a row, an agent shell buffer or an entry
+plist, see `agent-shell-overview-entry-functions', and returns a string
+or nil.  The non-nil results, joined with a space, are the detail of the
+row, which keeps its own faces.  At the bottom or top of the frame, the
+detail follows the location in the \"Where\" column; on the left or
+right side, it is right-aligned on the line of the location, which is
+cut on the left to make room.  The compact mode does not show it.
+
+A segment of the detail, as of any cell, is made clickable by an
+`agent-shell-overview-action' text property: its value is a function,
+which a mouse click on the segment calls with the id of the row, in
+place of going to the shell; RET still goes to the shell.
+Give such a segment a `help-echo' of its own, which the tooltip of the
+row does not replace, and a `mouse-face' other than `highlight', such as
+`link', for it to highlight apart from the row.
+
+The functions run at every redraw, once a second for each row, so they
+must only read what is already known, such as a cache filled by
+asynchronous processes, not run processes or read files.  An error in a
 function is shown as a message, and the next functions still run."
   :type 'hook)
 
@@ -884,11 +930,31 @@ WHERE is relative, or abbreviated in full outside of PROJECT; its
 
 (defun agent-shell-overview--directory (id)
   "Return the directory of row ID, or nil.
-That of a shell is its cwd, see `agent-shell-cwd'."
+That of a shell is the first that `agent-shell-overview-directory-functions'
+gives, and otherwise its cwd, see `agent-shell-cwd'."
   (if (agent-shell-overview--entry-p id)
       (plist-get id :directory)
     (and (buffer-live-p id)
-         (with-current-buffer id (agent-shell-cwd)))))
+         (or (run-hook-wrapped
+              'agent-shell-overview-directory-functions
+              (lambda (function)
+                (with-demoted-errors "agent-shell-overview-directory-functions: %S"
+                  (funcall function id))))
+             (with-current-buffer id (agent-shell-cwd))))))
+
+(defun agent-shell-overview--detail (id)
+  "Return the detail of row ID, or the empty string.
+It joins the results of `agent-shell-overview-detail-functions'."
+  (let (parts)
+    (run-hook-wrapped
+     'agent-shell-overview-detail-functions
+     (lambda (function)
+       (when-let* ((part (with-demoted-errors "agent-shell-overview-detail-functions: %S"
+                           (funcall function id)))
+                   ((not (string-empty-p part))))
+         (push part parts))
+       nil))
+    (string-join (nreverse parts) " ")))
 
 (defun agent-shell-overview--grouped-p ()
   "Return non-nil if the overview groups its rows by project.
@@ -981,9 +1047,18 @@ blank while the last activity of a shell is unknown, see
                       (_ 'agent-shell-overview-idle-days)))))))
 
 (defun agent-shell-overview-column-where (id _state)
-  "Return the cell of the location of row ID, see `agent-shell-overview--where'."
-  (propertize (agent-shell-overview--where id)
-              'face 'agent-shell-overview-location))
+  "Return the cell of the location of row ID, see `agent-shell-overview--where'.
+At the bottom or top of the frame, the detail of the row follows it, see
+`agent-shell-overview-detail-functions'; on the left or right side, the
+row shows its detail itself."
+  (let ((where (propertize (agent-shell-overview--where id)
+                           'face 'agent-shell-overview-location))
+        (detail (if (eq agent-shell-overview--layout 'vertical)
+                    ""
+                  (agent-shell-overview--detail id))))
+    (cond ((string-empty-p detail) where)
+          ((string-empty-p where) detail)
+          (t (concat where " " detail)))))
 
 (defconst agent-shell-overview--builtin-columns
   '(agent-shell-overview-column-state
@@ -1024,8 +1099,20 @@ headers are rows too."
 
 (defun agent-shell-overview--cells (id state)
   "Return the cells of row ID in STATE, followed by STATE.
-They follow `agent-shell-overview-columns'."
-  (vconcat (mapcar (lambda (column) (funcall (nth 2 column) id state))
+They follow `agent-shell-overview-columns'.  In the horizontal layout, a
+cell with a `help-echo' on a segment has the tooltip of its column on
+the rest, as `tabulated-list-print-col' gives a cell without one, since
+it keeps that of a cell only when the cell starts with it."
+  (vconcat (mapcar (lambda (column)
+                     (let ((cell (funcall (nth 2 column) id state)))
+                       (when (and (eq agent-shell-overview--layout 'horizontal)
+                                  (text-property-not-all 0 (length cell) 'help-echo nil cell))
+                         (setq cell (copy-sequence cell))
+                         (agent-shell-overview--put-missing
+                          0 (length cell) 'help-echo
+                          (concat (nth 0 column) ": " (substring-no-properties cell))
+                          cell))
+                       cell))
                    agent-shell-overview-columns)
            (list state)))
 
@@ -1427,11 +1514,24 @@ time."
                   (propertize title 'face title-face)))
       (insert (propertize (truncate-string-to-width title width nil nil "…")
                           'face title-face))
-      (unless (string-empty-p where)
-        (insert "\n" indent
-                (propertize (concat mark (agent-shell-overview--truncate-left
-                                          where (- width (string-width mark))))
-                            'face 'agent-shell-overview-location)))
+      ;; The detail is right-aligned, the location cut on the left before it.
+      (let* ((detail (truncate-string-to-width
+                      (agent-shell-overview--detail id) width nil nil "…"))
+             (room (- width (string-width detail)
+                      (if (string-empty-p detail) 0 1))))
+        (unless (and (string-empty-p where) (string-empty-p detail))
+          (insert "\n" indent
+                  (if (or (string-empty-p where) (< room (+ (string-width mark) 2)))
+                      ""
+                    (propertize (concat mark (agent-shell-overview--truncate-left
+                                              where (- room (string-width mark))))
+                                'face 'agent-shell-overview-location)))
+          (unless (string-empty-p detail)
+            (insert (agent-shell-overview--align
+                     (max 1 (- width (- (current-column) (length indent))
+                               (string-width detail)))
+                     (+ (length indent) width) detail)
+                    detail))))
       (insert "\n" indent
               activity (agent-shell-overview--align
                         (max 1 (- used (string-width activity)))
@@ -1454,13 +1554,24 @@ time."
     ;; Without a `help-echo', the highlight of the row under the mouse
     ;; waits for the next redisplay to show.  The narrow lines truncate the
     ;; title and location, so it gives them in full.
-    (put-text-property start (point) 'help-echo
-                       (string-join
-                        (seq-remove #'string-empty-p
-                                    (list (substring-no-properties title)
-                                          (substring-no-properties where)
-                                          (or (agent-shell-overview--help id) "")))
-                        "\n"))))
+    (agent-shell-overview--put-missing
+     start (point) 'help-echo
+     (string-join (seq-remove #'string-empty-p
+                              (list (substring-no-properties title)
+                                    (substring-no-properties where)
+                                    (or (agent-shell-overview--help id) "")))
+                  "\n"))))
+
+(defun agent-shell-overview--put-missing (start end property value &optional object)
+  "Set PROPERTY to VALUE from START to END where it is nil.
+OBJECT is the string to change, or nil for the current buffer.  A
+segment with a value of its own, such as the `help-echo' of a clickable
+segment, see `agent-shell-overview-detail-functions', keeps it."
+  (while (< start end)
+    (let ((next (next-single-property-change start property object end)))
+      (unless (get-text-property start property object)
+        (put-text-property start next property value object))
+      (setq start next))))
 
 (defun agent-shell-overview--separator ()
   "Return the dashed line between two sections of the overview."
@@ -1512,9 +1623,10 @@ the first cell alone, as a line that is no row."
                                ,@(and number (list 'agent-shell-overview-number number))))
         ;; Not sticky: a click past the end of the row is not on it.
         ;; Without the final newline, the highlight of a row stops at its end.
+        ;; A segment keeps a `mouse-face' of its own.
+        (agent-shell-overview--put-missing start (1- (point)) 'mouse-face 'highlight)
         (add-text-properties start (1- (point))
-                             (list 'mouse-face 'highlight
-                                   'keymap agent-shell-overview-row-map
+                             (list 'keymap agent-shell-overview-row-map
                                    'rear-nonsticky t)))
     (insert (aref cells 0))))
 
@@ -2081,12 +2193,17 @@ Each item shows the key of its command in the overview."
 
 (defun agent-shell-overview-click (event)
   "Show the shell on the row clicked by EVENT, as with RET.
-An entry with a `:confirm' prompt is gone to only after confirmation."
+An entry with a `:confirm' prompt is gone to only after confirmation.
+A click on a segment with an `agent-shell-overview-action' property
+calls that function with the row instead."
   (interactive "e")
   (posn-set-point (event-end event))
-  (let ((prompt (plist-get (agent-shell-overview--entry) :confirm)))
-    (when (or (not prompt) (y-or-n-p prompt))
-      (agent-shell-overview-goto-keep))))
+  (if-let* ((action (get-text-property (point) 'agent-shell-overview-action))
+            (id (agent-shell-overview-row-at-point)))
+      (funcall action id)
+    (let ((prompt (plist-get (agent-shell-overview--entry) :confirm)))
+      (when (or (not prompt) (y-or-n-p prompt))
+        (agent-shell-overview-goto-keep)))))
 
 (defun agent-shell-overview-mouse-menu (event)
   "Pop up a menu of the actions on the row clicked by EVENT and run one.

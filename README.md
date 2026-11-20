@@ -117,6 +117,26 @@ Projects come from project.el, so `.project` files and `project-find-functions`
 apply; `agent-shell-overview-worktree-functions` lifts a worktree to its main
 project (git worktrees, also of bare repositories, by default).
 
+`agent-shell-overview-directory-functions` tells where a shell works when that
+is not its cwd, for instance a worktree its session entered, which then gives
+its project group and location. `agent-shell-overview-detail-functions` adds
+text after the location, such as the diff size or pull request of a checkout,
+with faces of its own; on a side it is right-aligned on the location line. A
+segment of any cell with an `agent-shell-overview-action` text property is
+clickable: a click calls that function with the row instead of going to the
+shell. Both hooks run at every redraw, so they must only read cached data.
+
+```elisp
+(add-hook 'agent-shell-overview-detail-functions
+          (lambda (id)
+            (when-let* ((pr (my-cached-pull-request id)))
+              (propertize (format "#%d" (car pr))
+                          'face 'link 'mouse-face 'link
+                          'help-echo (cdr pr)
+                          'agent-shell-overview-action
+                          (lambda (_id) (browse-url (cdr pr)))))))
+```
+
 A built-in command can be varied by binding the variables it reads. This `N`
 starts a fresh Claude Code session in the project of the row at point, without
 any prompt:
