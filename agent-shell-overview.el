@@ -178,10 +178,10 @@ glyph."
 
 (defcustom agent-shell-overview-compact nil
   "What each session shows on the left or right side.
-With nil, the detailed mode, everything: its number, state and title;
-its location, followed by its detail, see
-`agent-shell-overview-detail-functions'; then its last activity, the
-other columns and its idle time.  With `standard', where it works: its
+With nil, the detailed mode, everything: its number, state, title and
+idle time; its location, followed by its detail, see
+`agent-shell-overview-detail-functions'; then its other columns, see
+`agent-shell-overview-columns'.  With `standard', where it works: its
 number, state, title and idle time, then its location and detail.  With
 any other non-nil value, the compact mode, its state at a glance on one
 line: its number, state, title, the essential segments of its detail
@@ -211,10 +211,13 @@ draw, does not push the next columns; the state column is one wider
 than its widest label for that.
 
 On the left or right side, the overview shows the state, title,
-location, last activity and idle time of each row in a layout of its
-own.  The columns whose FUNCTION is not one of the built-in
-`agent-shell-overview-column-*' functions are shown there too, on the
-line of the last activity, each right-aligned in WIDTH plus 3 columns.
+location and idle time of each row in a layout of its own, the last
+activity on hovering it.  The columns whose FUNCTION is not one of the
+built-in `agent-shell-overview-column-*' functions are shown there too,
+on a line of their own, each right-aligned in WIDTH plus 3 columns from
+the left, or, with a `:side-align' property of `right', against the
+right edge, after a space at least.  That is the only property of PROPS
+the side layout reads.
 The standard and compact modes, see `agent-shell-overview-compact',
 leave them out.
 
@@ -1493,13 +1496,12 @@ The tenth shows 0, the key that goes to it."
 
 (defun agent-shell-overview--print-vertical (id cells number)
   "Insert the lines of row ID in the vertical layout, from its CELLS.
-They show its NUMBER, state and title, the location and detail, then
-the last activity, the other columns and the idle time, ending in a
-newline.  See `agent-shell-overview--vertical-mode': in the standard
-mode, the third is left out and the idle time ends the first; in the
-compact mode, they are one line of its NUMBER, state, title, preceded by
-a mark in a worktree, the essential segments of its detail and idle
-time."
+They show its NUMBER, state, title and idle time, the location and
+detail, then the other columns, ending in a newline.  See
+`agent-shell-overview--vertical-mode': in the standard mode, the third
+is left out; in the compact mode, they are one line of its NUMBER,
+state, title, preceded by a mark in a worktree, the essential segments
+of its detail and idle time."
   (pcase-let* ((state (aref cells (1- (length cells))))
                (`(,glyph ,_ ,face) (agent-shell-overview--state-spec state))
                (mode (agent-shell-overview--vertical-mode))
@@ -1555,28 +1557,39 @@ time."
               ;; The title starts on its column, after a glyph of any width.
               (agent-shell-overview--align 1 (length indent) ""))
       (if (eq mode 'detailed)
-          ;; The last activity fills a column of 16; each other column
-          ;; is right-aligned in its width plus 3.
-          (let ((used 16))
-            (insert (propertize (truncate-string-to-width title width nil nil "…")
-                                'face title-face))
+          ;; The title and idle time, the location and detail, then the
+          ;; other columns on a line of their own when one of them is not
+          ;; blank: each right-aligned in its width plus 3, from the left,
+          ;; and those with `:side-align' `right' against the right edge.
+          (let ((title (truncate-string-to-width
+                        title (max 1 (- width 1 (string-width idle))) nil nil "…"))
+                (used 0)
+                (columns "")
+                (pinned nil))
+            (insert (propertize title 'face title-face))
+            (right idle (string-width title))
             (location)
-            (insert "\n" indent
-                    activity (agent-shell-overview--align
-                              (max 1 (- used (string-width activity)))
-                              (+ (length indent) used) ""))
             (seq-do-indexed
              (lambda (column index)
                (unless (memq (nth 2 column) agent-shell-overview--builtin-columns)
                  (let ((cell (aref cells index))
                        (field (+ (nth 1 column) 3)))
-                   (setq used (+ used (max field (string-width cell))))
-                   (insert (agent-shell-overview--align
-                            (max 0 (- field (string-width cell)))
-                            (+ (length indent) used) cell)
-                           cell))))
+                   (if (eq (plist-get (nthcdr 3 column) :side-align) 'right)
+                       (push cell pinned)
+                     (setq used (+ used (max field (string-width cell))))
+                     (setq columns
+                           (concat columns
+                                   (agent-shell-overview--align
+                                    (max 0 (- field (string-width cell)))
+                                    (+ (length indent) used) cell)
+                                   cell))))))
              agent-shell-overview-columns)
-            (right idle used))
+            (let ((pinned (string-join (nreverse pinned) " ")))
+              (unless (string-blank-p (substring-no-properties
+                                       (concat columns pinned)))
+                (insert "\n" indent columns)
+                (unless (string-empty-p pinned)
+                  (right pinned used)))))
         ;; The first line ends with the idle time, preceded in the compact
         ;; mode by the essential segments of the detail, up to half of it.
         (let* ((one (eq mode 'compact))
@@ -1599,14 +1612,14 @@ time."
       (insert ?\n))
     ;; Without a `help-echo', the highlight of the row under the mouse
     ;; waits for the next redisplay to show.  The narrow lines truncate the
-    ;; title and location, and the standard and compact modes leave out
-    ;; the last activity, so it gives them in full.
+    ;; title and location, and leave out the last activity, so it gives
+    ;; them in full.
     (agent-shell-overview--put-missing
      start (point) 'help-echo
      (string-join (seq-remove #'string-empty-p
                               (list (substring-no-properties title)
                                     (substring-no-properties where)
-                                    (if (or (eq mode 'detailed) (string-empty-p activity))
+                                    (if (string-empty-p activity)
                                         ""
                                       (concat "Last activity: "
                                               (substring-no-properties activity)))
