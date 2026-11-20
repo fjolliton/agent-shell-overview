@@ -9,8 +9,8 @@ From the list, you preview a session, jump to it, interrupt, reload, restart,
 kill, mark it unread or mute it; a muted session never asks for attention and
 moves to a Parked group. The rows of the sessions shown in a window of the
 frame are tinted. At the bottom or top of the frame the overview is a table; on the left
-or right, a narrow list, with one line per session in compact mode
-(`agent-shell-overview-compact`, toggled with `C`).
+or right, a narrow list, detailed, standard or compact
+(`agent-shell-overview-compact`, cycled with `C`).
 
 Horizontal layout (a panel at the top or bottom of the frame):
 
@@ -57,7 +57,7 @@ Any key will do; the author binds `agent-shell-overview` to `F10` and
 | `TAB` on a group | Fold or unfold the group (`S-TAB`: all)        |
 | `S` / `f`     | Cycle the sort / the filter                       |
 | `G`           | Group by project, or list all sessions as one     |
-| `C`           | One line per session on the side, or several      |
+| `C`           | Detailed, standard or compact list on the side    |
 | `u`           | Mark unread / read                                |
 | `z`           | Mute / unmute                                     |
 | `k`           | Kill                                              |
@@ -80,7 +80,7 @@ the session.
 |-----------------------------------------|---------------|------------------------------------------------------|
 | `agent-shell-overview-side`             | `bottom`      | Side the overview opens on (`w` cycles it)           |
 | `agent-shell-overview-vertical-width`   | `40`          | Width of the overview on the left or right side      |
-| `agent-shell-overview-compact`          | `nil`         | One line per session on the side (`C` toggles it)    |
+| `agent-shell-overview-compact`          | `nil`         | Detailed, standard or compact list on the side (`C`) |
 | `agent-shell-overview-group-by-project` | `t`           | Rows grouped by project, or one list (`G`)           |
 | `agent-shell-overview-default-sort`     | `age`         | Sort the overview starts with (`S` cycles it)        |
 | `agent-shell-overview-sorts`            | all four      | Sorts `S` cycles through: age, name, state, activity |
@@ -124,7 +124,9 @@ text after the location, such as the diff size or pull request of a checkout,
 with faces of its own; on a side it is right-aligned on the location line. A
 segment of any cell with an `agent-shell-overview-action` text property is
 clickable: a click calls that function with the row instead of going to the
-shell. Both hooks run at every redraw, so they must only read cached data.
+shell. In the compact mode, only the segments of the detail with an
+`agent-shell-overview-essential` text property are shown. Both hooks run at
+every redraw, so they must only read cached data.
 
 ```elisp
 (add-hook 'agent-shell-overview-detail-functions

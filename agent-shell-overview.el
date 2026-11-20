@@ -165,8 +165,8 @@ It goes under the faces of the cells, to the edge of the window.")
   "The side of the frame on which `agent-shell-overview' opens.
 On `top' and `bottom', the overview is a table in a window as tall as
 it.  On `left' and `right', it is a list in a narrow window, where each
-session takes several lines, without column titles, or one line in
-compact mode, see `agent-shell-overview-compact'."
+session takes several lines, without column titles, fewer in the
+standard or compact mode, see `agent-shell-overview-compact'."
   :type '(choice (const bottom) (const top) (const left) (const right)))
 
 (defcustom agent-shell-overview-vertical-width 40
@@ -177,11 +177,20 @@ glyph."
   :type 'natnum)
 
 (defcustom agent-shell-overview-compact nil
-  "Non-nil to show each session on one line on the left or right side.
-The line shows its number, state, title and idle time; hovering it
-shows its location too.  This has no effect at the top or bottom.  This
-is the mode until `agent-shell-overview-toggle-compact' changes it."
-  :type 'boolean)
+  "What each session shows on the left or right side.
+With nil, the detailed mode, everything: its number, state and title;
+its location, followed by its detail, see
+`agent-shell-overview-detail-functions'; then its last activity, the
+other columns and its idle time.  With `standard', where it works: its
+number, state, title and idle time, then its location and detail.  With
+any other non-nil value, the compact mode, its state at a glance on one
+line: its number, state, title, the essential segments of its detail
+and its idle time.  Hovering a row shows its location and last activity
+in full.  This has no effect at the top or bottom.  This is the mode
+until `agent-shell-overview-cycle-compact' changes it."
+  :type '(choice (const :tag "Detailed" nil)
+                 (const :tag "Standard" standard)
+                 (const :tag "Compact" t)))
 
 (defcustom agent-shell-overview-columns
   '((" State" 12 agent-shell-overview-column-state :pad-right 1)
@@ -206,8 +215,8 @@ location, last activity and idle time of each row in a layout of its
 own.  The columns whose FUNCTION is not one of the built-in
 `agent-shell-overview-column-*' functions are shown there too, on the
 line of the last activity, each right-aligned in WIDTH plus 3 columns.
-In compact mode, see `agent-shell-overview-compact', a row shows its
-state, title and idle time alone.
+The standard and compact modes, see `agent-shell-overview-compact',
+leave them out.
 
 See `agent-shell-overview-add-column'."
   :type '(repeat (cons (string :tag "Title")
@@ -384,7 +393,11 @@ or nil.  The non-nil results, joined with a space, are the detail of the
 row, which keeps its own faces.  At the bottom or top of the frame, the
 detail follows the location in the \"Where\" column; on the left or
 right side, it is right-aligned on the line of the location, which is
-cut on the left to make room.  The compact mode does not show it.
+cut on the left to make room.  In the compact mode, see
+`agent-shell-overview-compact', a row shows only the segments of its
+detail with a non-nil `agent-shell-overview-essential' text property,
+joined with a space, before the idle time, the title giving up the room;
+without such a segment, it shows none.
 
 A segment of the detail, as of any cell, is made clickable by an
 `agent-shell-overview-action' text property: its value is a function,
@@ -453,8 +466,8 @@ one, is `agent-shell-overview-default-sort'.")
 Nil is the one of `agent-shell-overview-group-by-project'.")
 
 (defvar agent-shell-overview--compact nil
-  "Whether the vertical layout is compact: `compact', `full', or nil.
-Nil is the one of `agent-shell-overview-compact'.")
+  "The mode of the vertical layout: `detailed', `standard' or `compact'.
+Nil is that of `agent-shell-overview-compact'.")
 
 (defvar agent-shell-overview--filter nil
   "The key of the current filter in `agent-shell-overview-filters', or nil.
@@ -964,13 +977,15 @@ See `agent-shell-overview-toggle-grouping'."
     ('none nil)
     (_ agent-shell-overview-group-by-project)))
 
-(defun agent-shell-overview--compact-p ()
-  "Return non-nil if the vertical layout shows each row on one line.
-See `agent-shell-overview-toggle-compact'."
-  (pcase agent-shell-overview--compact
-    ('compact t)
-    ('full nil)
-    (_ agent-shell-overview-compact)))
+(defun agent-shell-overview--vertical-mode ()
+  "Return the mode of the vertical layout: `detailed', `standard' or `compact'.
+See `agent-shell-overview-compact' and
+`agent-shell-overview-cycle-compact'."
+  (or agent-shell-overview--compact
+      (pcase agent-shell-overview-compact
+        ('nil 'detailed)
+        ('standard 'standard)
+        (_ 'compact))))
 
 (defun agent-shell-overview--group (id)
   "Return the key of the overview group of row ID.
@@ -1469,13 +1484,16 @@ The tenth shows 0, the key that goes to it."
 
 (defun agent-shell-overview--print-vertical (id cells number)
   "Insert the lines of row ID in the vertical layout, from its CELLS.
-They show its NUMBER, state and title, the location, then the last
-activity, the other columns and the idle time, ending in a newline.  In
-compact mode, see `agent-shell-overview--compact-p', they are one line
-of its NUMBER, state, title, preceded by a mark in a worktree, and idle
+They show its NUMBER, state and title, the location and detail, then
+the last activity, the other columns and the idle time, ending in a
+newline.  See `agent-shell-overview--vertical-mode': in the standard
+mode, the third is left out and the idle time ends the first; in the
+compact mode, they are one line of its NUMBER, state, title, preceded by
+a mark in a worktree, the essential segments of its detail and idle
 time."
   (pcase-let* ((state (aref cells (1- (length cells))))
                (`(,glyph ,_ ,face) (agent-shell-overview--state-spec state))
+               (mode (agent-shell-overview--vertical-mode))
                (title (agent-shell-overview--cell
                        id cells #'agent-shell-overview-column-title))
                (title-face (and (not (string-empty-p title))
@@ -1489,78 +1507,118 @@ time."
                           id cells #'agent-shell-overview-column-activity))
                (idle (agent-shell-overview--cell
                       id cells #'agent-shell-overview-column-idle))
+               (detail (agent-shell-overview--detail id))
                ;; The number sits under the fold marker of the group header, the
                ;; glyph under the project name, and the rest under the title.
                ;; The lines stop one column short of the edge, as the parent
                ;; directory of the header does.
                (indent "     ")
                (width (- agent-shell-overview-vertical-width (length indent) 2))
-               ;; The last activity fills a column of 16; each other column
-               ;; is right-aligned in its width plus 3.
-               (used 16)
                (start (point)))
-    (insert " " (agent-shell-overview--number-cell number) " "
-            (propertize glyph 'face face)
-            ;; The title starts on its column, after a glyph of any width.
-            (agent-shell-overview--align 1 (length indent) ""))
-    (if (agent-shell-overview--compact-p)
-        ;; The worktree mark and the title leave a space before the idle
-        ;; time, right-aligned on the column of the full layout.
-        (let ((title (truncate-string-to-width
-                      title (max 1 (- width (string-width mark) 1 (string-width idle)))
-                      nil nil "…")))
-          (setq used (+ (string-width mark) (string-width title)))
+    (cl-flet ((right (text used)
+                ;; TEXT right-aligned on the line, after USED columns.
+                (insert (agent-shell-overview--align
+                         (max 1 (- width used (string-width text)))
+                         (+ (length indent) width) text)
+                        text))
+              (location ()
+                ;; The detail is right-aligned, the location cut on the
+                ;; left before it.
+                (let* ((detail (truncate-string-to-width detail width nil nil "…"))
+                       (room (- width (string-width detail)
+                                (if (string-empty-p detail) 0 1))))
+                  (unless (and (string-empty-p where) (string-empty-p detail))
+                    (insert "\n" indent
+                            (if (or (string-empty-p where)
+                                    (< room (+ (string-width mark) 2)))
+                                ""
+                              (propertize (concat mark (agent-shell-overview--truncate-left
+                                                        where (- room (string-width mark))))
+                                          'face 'agent-shell-overview-location)))
+                    (unless (string-empty-p detail)
+                      (insert (agent-shell-overview--align
+                               (max 1 (- width (- (current-column) (length indent))
+                                         (string-width detail)))
+                               (+ (length indent) width) detail)
+                              detail))))))
+      (insert " " (agent-shell-overview--number-cell number) " "
+              (propertize glyph 'face face)
+              ;; The title starts on its column, after a glyph of any width.
+              (agent-shell-overview--align 1 (length indent) ""))
+      (if (eq mode 'detailed)
+          ;; The last activity fills a column of 16; each other column
+          ;; is right-aligned in its width plus 3.
+          (let ((used 16))
+            (insert (propertize (truncate-string-to-width title width nil nil "…")
+                                'face title-face))
+            (location)
+            (insert "\n" indent
+                    activity (agent-shell-overview--align
+                              (max 1 (- used (string-width activity)))
+                              (+ (length indent) used) ""))
+            (seq-do-indexed
+             (lambda (column index)
+               (unless (memq (nth 2 column) agent-shell-overview--builtin-columns)
+                 (let ((cell (aref cells index))
+                       (field (+ (nth 1 column) 3)))
+                   (setq used (+ used (max field (string-width cell))))
+                   (insert (agent-shell-overview--align
+                            (max 0 (- field (string-width cell)))
+                            (+ (length indent) used) cell)
+                           cell))))
+             agent-shell-overview-columns)
+            (right idle used))
+        ;; The first line ends with the idle time, preceded in the compact
+        ;; mode by the essential segments of the detail, up to half of it.
+        (let* ((one (eq mode 'compact))
+               (mark (if one mark ""))
+               (essential (if one
+                              (truncate-string-to-width
+                               (agent-shell-overview--essential detail)
+                               (/ width 2) nil nil "…")
+                            ""))
+               (tail (string-join (seq-remove #'string-empty-p (list essential idle))
+                                  " "))
+               (title (truncate-string-to-width
+                       title (max 1 (- width (string-width mark) 1 (string-width tail)))
+                       nil nil "…")))
           (insert (propertize mark 'face 'agent-shell-overview-location)
-                  (propertize title 'face title-face)))
-      (insert (propertize (truncate-string-to-width title width nil nil "…")
-                          'face title-face))
-      ;; The detail is right-aligned, the location cut on the left before it.
-      (let* ((detail (truncate-string-to-width
-                      (agent-shell-overview--detail id) width nil nil "…"))
-             (room (- width (string-width detail)
-                      (if (string-empty-p detail) 0 1))))
-        (unless (and (string-empty-p where) (string-empty-p detail))
-          (insert "\n" indent
-                  (if (or (string-empty-p where) (< room (+ (string-width mark) 2)))
-                      ""
-                    (propertize (concat mark (agent-shell-overview--truncate-left
-                                              where (- room (string-width mark))))
-                                'face 'agent-shell-overview-location)))
-          (unless (string-empty-p detail)
-            (insert (agent-shell-overview--align
-                     (max 1 (- width (- (current-column) (length indent))
-                               (string-width detail)))
-                     (+ (length indent) width) detail)
-                    detail))))
-      (insert "\n" indent
-              activity (agent-shell-overview--align
-                        (max 1 (- used (string-width activity)))
-                        (+ (length indent) used) ""))
-      (seq-do-indexed
-       (lambda (column index)
-         (unless (memq (nth 2 column) agent-shell-overview--builtin-columns)
-           (let ((cell (aref cells index))
-                 (field (+ (nth 1 column) 3)))
-             (setq used (+ used (max field (string-width cell))))
-             (insert (agent-shell-overview--align
-                      (max 0 (- field (string-width cell)))
-                      (+ (length indent) used) cell)
-                     cell))))
-       agent-shell-overview-columns))
-    (insert (agent-shell-overview--align
-             (max 1 (- width used (string-width idle)))
-             (+ (length indent) width) idle)
-            idle ?\n)
+                  (propertize title 'face title-face))
+          (right tail (+ (string-width mark) (string-width title)))
+          (unless one
+            (location))))
+      (insert ?\n))
     ;; Without a `help-echo', the highlight of the row under the mouse
     ;; waits for the next redisplay to show.  The narrow lines truncate the
-    ;; title and location, so it gives them in full.
+    ;; title and location, and the standard and compact modes leave out
+    ;; the last activity, so it gives them in full.
     (agent-shell-overview--put-missing
      start (point) 'help-echo
      (string-join (seq-remove #'string-empty-p
                               (list (substring-no-properties title)
                                     (substring-no-properties where)
+                                    (if (or (eq mode 'detailed) (string-empty-p activity))
+                                        ""
+                                      (concat "Last activity: "
+                                              (substring-no-properties activity)))
                                     (or (agent-shell-overview--help id) "")))
                   "\n"))))
+
+(defun agent-shell-overview--essential (detail)
+  "Return the essential segments of DETAIL, joined with a space.
+They are its runs with a non-nil `agent-shell-overview-essential'
+property, see `agent-shell-overview-detail-functions'."
+  (let ((end (length detail))
+        (start 0)
+        parts)
+    (while (setq start (text-property-not-all
+                        start end 'agent-shell-overview-essential nil detail))
+      (let ((stop (or (text-property-any
+                       start end 'agent-shell-overview-essential nil detail)
+                      end)))
+        (push (substring detail start stop) parts)
+        (setq start stop)))
+    (string-join (nreverse parts) " ")))
 
 (defun agent-shell-overview--put-missing (start end property value &optional object)
   "Set PROPERTY to VALUE from START to END where it is nil.
@@ -1820,19 +1878,29 @@ Parked group, it stays there."
                      (point)))))
   (message "Grouping: %s" (if (agent-shell-overview--grouped-p) "by project" "none")))
 
-(defun agent-shell-overview-toggle-compact ()
-  "Show each row of the overview on one line, or on several.
+(defun agent-shell-overview-cycle-compact ()
+  "Switch the overview to the next mode: detailed, standard, compact.
 This applies on the left or right side; see
 `agent-shell-overview-compact'.  The mode lasts for the session.  Point
 stays on its row."
   (interactive)
   (setq agent-shell-overview--compact
-        (if (agent-shell-overview--compact-p) 'full 'compact))
+        (pcase (agent-shell-overview--vertical-mode)
+          ('detailed 'standard)
+          ('standard 'compact)
+          (_ 'detailed)))
   (agent-shell-overview-refresh)
-  (message "%s%s" (if (agent-shell-overview--compact-p) "Compact list" "Full list")
+  (message "%s%s"
+           (pcase agent-shell-overview--compact
+             ('detailed "Detailed list")
+             ('standard "Standard list")
+             (_ "Compact list"))
            (if (eq agent-shell-overview--layout 'vertical)
                ""
              " (on the left or right side)")))
+
+(define-obsolete-function-alias 'agent-shell-overview-toggle-compact
+  #'agent-shell-overview-cycle-compact "0.1.0")
 
 (defun agent-shell-overview-toggle-fold (&optional all)
   "Fold or unfold the group of the header line at point.
@@ -2187,7 +2255,7 @@ Each item shows the key of its command in the overview."
     ["New shell" agent-shell-overview-new]
     ["New shell in project" agent-shell-overview-new-in-project]
     ["Group by project / list as one" agent-shell-overview-toggle-grouping]
-    ["One line per session / full list" agent-shell-overview-toggle-compact]
+    ["Detailed, standard or compact list" agent-shell-overview-cycle-compact]
     ["Move to the next side" agent-shell-overview-cycle-side]
     ["Toggle logging" agent-shell-toggle-logging]))
 
@@ -2251,7 +2319,7 @@ A command added here finds its row with
   "t" #'agent-shell-overview-view-traffic
   "l" #'agent-shell-toggle-logging
   "G" #'agent-shell-overview-toggle-grouping
-  "C" #'agent-shell-overview-toggle-compact
+  "C" #'agent-shell-overview-cycle-compact
   ;; The column widths come from `agent-shell-overview-columns' at each
   ;; redraw, so the width commands of `tabulated-list-mode' cannot work.
   "{" #'undefined
