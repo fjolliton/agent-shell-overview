@@ -116,6 +116,9 @@ Rows that are not shell buffers come from `agent-shell-overview-entry-functions`
 Projects come from project.el, so `.project` files and `project-find-functions`
 apply; `agent-shell-overview-worktree-functions` lifts a worktree to its main
 project (git worktrees, also of bare repositories, by default).
+A shell resuming a session that replays its history shows no time until its
+next turn, unless its buffer sets `agent-shell-overview-restored-time` to the
+time of the last activity of the saved session.
 
 `agent-shell-overview-directory-functions` tells where a shell works when that
 is not its cwd, for instance a worktree its session entered, which then gives

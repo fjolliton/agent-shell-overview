@@ -441,6 +441,12 @@ See `agent-shell-overview-cycle-side'.")
   "Non-nil from the replay of a resumed session to the next turn.
 See `agent-shell-overview-activity-known-p'.")
 
+(defvar-local agent-shell-overview-restored-time nil
+  "The time of the last activity of the session this shell resumed, or nil.
+A Lisp timestamp, set by the client that saved the session.  The
+overview shows it while the last activity of the shell is unknown, see
+`agent-shell-overview-activity-known-p'.")
+
 (defvar-local agent-shell-overview-muted nil
   "Non-nil when this agent shell is muted: it never asks for attention.
 The overview lists it in its Parked group.  See
@@ -797,14 +803,18 @@ A function that fails adds none, and its error is shown."
 (defun agent-shell-overview--help (id)
   "Return the tooltip of the state of row ID, or nil.
 A shell whose last activity is unknown says so, after the help of
-`agent-shell-overview-help-functions'."
+`agent-shell-overview-help-functions', and that the time shown is that
+of the saved session if `agent-shell-overview-restored-time' is set."
   (if (agent-shell-overview--entry-p id)
       (agent-shell-overview--entry-help id)
     (when (buffer-live-p id)
       (let ((help (run-hook-with-args-until-success
                    'agent-shell-overview-help-functions id))
-            (unknown (and (agent-shell-overview--unknown-p id)
-                          "No turn seen yet: the last activity is unknown.")))
+            (unknown
+             (and (agent-shell-overview--unknown-p id)
+                  (if (buffer-local-value 'agent-shell-overview-restored-time id)
+                      "No turn seen yet: the last activity is that of the saved session."
+                    "No turn seen yet: the last activity is unknown."))))
         (if (and help unknown) (concat help "\n" unknown) (or help unknown))))))
 
 (defun agent-shell-overview--state-spec (state)
@@ -825,7 +835,8 @@ and its name."
 It is not from the replay of a resumed session, signalled by the
 `session-restored' event of agent-shell, to the next turn of the shell:
 agent-shell takes the time of any message of the agent, the replayed
-ones included, and the overview shows no time instead.  A session
+ones included, and the overview shows instead the time of
+`agent-shell-overview-restored-time', or no time.  A session
 resumed without replay, as with `session/resume', signals no such
 event, so its time is that of the resume."
   (not (buffer-local-value 'agent-shell-overview--restored buffer)))
@@ -838,10 +849,12 @@ See `agent-shell-overview-activity-known-p'."
 
 (defun agent-shell-overview--activity (id)
   "Return the time of the last activity of row ID, or nil.
-It is nil while that of a shell is unknown, see
-`agent-shell-overview-activity-known-p'."
+While that of a shell is unknown, see
+`agent-shell-overview-activity-known-p', it is
+`agent-shell-overview-restored-time'."
   (cond ((agent-shell-overview--entry-p id) (plist-get id :time))
-        ((agent-shell-overview--unknown-p id) nil)
+        ((agent-shell-overview--unknown-p id)
+         (buffer-local-value 'agent-shell-overview-restored-time id))
         (t (ignore-errors (agent-shell-last-activity-time :shell-buffer id)))))
 
 (defun agent-shell-overview--idle (time)
@@ -1037,22 +1050,18 @@ Its face is that STATE gives its titles, dimmed for a muted shell."
 
 (defun agent-shell-overview-column-activity (id _state)
   "Return the cell of the time of the last activity of row ID.
-It is blank while that of a shell is unknown, see
-`agent-shell-overview-activity-known-p'."
-  (if (agent-shell-overview--unknown-p id)
-      ""
-    (propertize (agent-shell-overview--last-activity
-                 (agent-shell-overview--activity id))
-                'face 'agent-shell-overview-dim)))
+It is blank when there is none, see `agent-shell-overview--activity'."
+  (propertize (agent-shell-overview--last-activity
+               (agent-shell-overview--activity id))
+              'face 'agent-shell-overview-dim))
 
 (defun agent-shell-overview-column-idle (id _state)
   "Return the cell of the time since the last activity of row ID.
 Its face fades from seconds, to minutes, to hours, to days.  It is
-blank while the last activity of a shell is unknown, see
-`agent-shell-overview-activity-known-p'."
+blank when there is no last activity, see
+`agent-shell-overview--activity'."
   (let ((idle (agent-shell-overview--idle (agent-shell-overview--activity id))))
     (cond
-     ((agent-shell-overview--unknown-p id) "")
      ((string-empty-p idle) idle)
      (t (propertize idle 'face
                     (pcase (aref idle (1- (length idle)))
@@ -1311,8 +1320,8 @@ MESSAGE and ARGS format the warning, after the name of OPTION."
 (defun agent-shell-overview--sort-key (row)
   "Return what orders ROW, a (STATE . ID) pair, in the current sort.
 Keys compare with `agent-shell-overview--key<', the smallest first.  A
-row without activity, or whose activity is unknown, goes after all the
-others."
+row without a time of activity, see `agent-shell-overview--activity',
+goes after all the others."
   (pcase (agent-shell-overview--current-sort)
     ('name (downcase (agent-shell-overview--title-of (cdr row))))
     ('state (or (seq-position (mapcar #'car agent-shell-overview-states) (car row))
