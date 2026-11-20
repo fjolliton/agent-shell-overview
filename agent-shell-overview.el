@@ -499,8 +499,10 @@ It is nil outside of a drawing.  See `agent-shell-overview-goto-number'.")
 
 (defvar agent-shell-overview--folded nil
   "The groups the overview folds to their header line.
-Each is a project root, or `parked' for the Parked group, see
-`agent-shell-overview--group'.  See `agent-shell-overview-toggle-fold'.")
+Each is a project root, `parked' for the Parked group, see
+`agent-shell-overview--group', or (parked . ROOT) for the project ROOT
+in the Parked group, see `agent-shell-overview--parked-entries'.  See
+`agent-shell-overview-toggle-fold'.")
 
 (defvar-local agent-shell-overview--layout 'horizontal
   "The layout of the overview in this buffer, `horizontal' or `vertical'.
@@ -1015,14 +1017,13 @@ directory, see `agent-shell-overview--location'."
 (defun agent-shell-overview--where (id)
   "Return the location the overview shows for row ID.
 It is its directory relative to its project, see
-`agent-shell-overview--location'.  A row out of a project group, in the
-Parked group or when the overview does not group by project, has its
-directory in full, abbreviated; it keeps the
-`agent-shell-overview-worktree' property."
+`agent-shell-overview--location', under its project group or its
+project sub-header in the Parked group.  When the overview does not
+group by project, a row has its directory in full, abbreviated; it keeps
+the `agent-shell-overview-worktree' property."
   (if-let* ((directory (agent-shell-overview--directory id)))
       (pcase-let ((`(,project . ,where) (agent-shell-overview--location directory)))
-        (if (or (and (agent-shell-overview--grouped-p)
-                     (not (agent-shell-overview--parked-p id)))
+        (if (or (agent-shell-overview--grouped-p)
                 (file-name-absolute-p where))
             where
           (propertize (directory-file-name
@@ -1229,20 +1230,25 @@ PARKED is non-nil."
             (mapcar #'car agent-shell-overview-states)))
 
 (defun agent-shell-overview--group-header (project rows &optional folded)
-  "Return the table entry of the header line of group PROJECT, or `parked'.
-It shows a fold marker, the name, the number of ROWS, the glyph of a
-FOLDED group, and the parent directory against the right edge."
+  "Return the table entry of the header line of group PROJECT.
+PROJECT is a project root, `parked', or (parked . ROOT) for the project
+ROOT in the Parked group, whose header is indented under it, without
+the parent directory.  It shows a fold marker, the name, the number of
+ROWS, the glyph of a FOLDED group, and the parent directory against the
+right edge."
   (let* ((width (agent-shell-overview--table-width))
          (dim 'agent-shell-overview-dim)
-         (parked (eq project 'parked))
-         (path (if parked
-                   "Parked"
-                 (abbreviate-file-name (directory-file-name project))))
-         (left (concat (propertize (if folded " ⏵ " " ⏷ ") 'face dim)
+         (sub (consp project))
+         (parked (or sub (eq project 'parked)))
+         (path (cond (sub (abbreviate-file-name (directory-file-name (cdr project))))
+                     (parked "Parked")
+                     (t (abbreviate-file-name (directory-file-name project)))))
+         (left (concat (propertize (concat (if sub "   " " ") (if folded "⏵ " "⏷ "))
+                                   'face dim)
                        (propertize (file-name-nondirectory path)
-                                   'face (if parked
-                                             'agent-shell-overview-parked
-                                           'agent-shell-overview-project))
+                                   'face (cond (sub 'agent-shell-overview-location)
+                                               (parked 'agent-shell-overview-parked)
+                                               (t 'agent-shell-overview-project)))
                        (propertize (format " %d" (length rows)) 'face dim)
                        (when folded
                          (when-let* ((state (agent-shell-overview--folded-state
@@ -1274,7 +1280,7 @@ FOLDED group, and the parent directory against the right edge."
        'agent-shell-overview-group project
        'keymap agent-shell-overview-group-map
        'mouse-face 'highlight
-       'help-echo (if parked
+       'help-echo (if (eq project 'parked)
                       "Muted sessions, which never ask for attention, and other parked rows"
                     path))
       (propertize "\n" 'keymap agent-shell-overview-group-map)))))
@@ -1379,6 +1385,52 @@ followed by the entries of its (STATE . ID) ROWS unless PROJECT is in
           (unless folded
             (mapcar #'agent-shell-overview--row-entry (cdr group))))))
 
+;; A parked row in a project goes under a header with its name, so that its
+;; location is relative to it, as in a project group.
+(defun agent-shell-overview--parked-entries (rows grouped)
+  "Return the table entries of the Parked group of its (STATE . ID) ROWS.
+They are its header line, see `agent-shell-overview--group-header',
+then, unless it is in `agent-shell-overview--folded', the entries of
+ROWS.  When GROUPED, see `agent-shell-overview--grouped-p', those in a
+project are under a header per project, see
+`agent-shell-overview--group-header', which folds them, by name with
+the name sort and otherwise in the order of their first row; the rows
+without a directory come first, without one."
+  (let ((folded (member 'parked agent-shell-overview--folded)))
+    (cons (agent-shell-overview--group-header 'parked rows folded)
+          (cond (folded nil)
+                ((not grouped) (mapcar #'agent-shell-overview--row-entry rows))
+                (t
+                 (let (projects)
+                   (dolist (row rows)
+                     (let* ((directory (agent-shell-overview--directory (cdr row)))
+                            (project (and directory
+                                          (car (agent-shell-overview--location directory))))
+                            (group (assoc project projects)))
+                       (if group
+                           (push row (cdr group))
+                         (push (list project row) projects))))
+                   (setq projects
+                         (mapcar (lambda (group) (cons (car group) (nreverse (cdr group))))
+                                 (nreverse projects)))
+                   (when (eq (agent-shell-overview--current-sort) 'name)
+                     (setq projects
+                           (agent-shell-overview--sort-by
+                            (lambda (group)
+                              (if (car group)
+                                  (downcase (file-name-nondirectory
+                                             (directory-file-name (car group))))
+                                ""))
+                            projects)))
+                   (mapcan (lambda (group)
+                             (if (car group)
+                                 (agent-shell-overview--group-entries
+                                  (cons (cons 'parked (car group)) (cdr group)))
+                               (mapcar #'agent-shell-overview--row-entry (cdr group))))
+                           ;; The rows without a directory first.
+                           (append (seq-remove #'car projects)
+                                   (seq-filter #'car projects)))))))))
+
 (defun agent-shell-overview--row-entry (row)
   "Return the table entry of ROW, a (STATE . ID) pair."
   (list (cdr row) (agent-shell-overview--cells (cdr row) (car row))))
@@ -1434,7 +1486,7 @@ group are one list without a header, see
                        groups))
                    (mapcar #'agent-shell-overview--row-entry flat))
                  (and parked
-                      (agent-shell-overview--group-entries (cons 'parked parked)))))
+                      (agent-shell-overview--parked-entries parked grouped))))
          (total (+ (length flat)
                    (seq-reduce (lambda (sum group) (+ sum (length (cdr group)))) groups 0)
                    (length parked))))
@@ -1520,10 +1572,16 @@ of its detail and idle time."
                       id cells #'agent-shell-overview-column-idle))
                (detail (agent-shell-overview--detail id))
                ;; The number sits under the fold marker of the group header, the
-               ;; glyph under the project name, and the rest under the title.
-               ;; The lines stop one column short of the edge, as the parent
-               ;; directory of the header does.
-               (indent "     ")
+               ;; glyph under the project name, and the rest under the title;
+               ;; under a project of the Parked group, the glyph and the rest
+               ;; are 2 columns further, under its name.  The lines stop one
+               ;; column short of the edge, as the parent directory of the
+               ;; header does.
+               (nested (and (agent-shell-overview--grouped-p)
+                            (agent-shell-overview--parked-p id)
+                            (agent-shell-overview--directory id)
+                            t))
+               (indent (if nested "       " "     "))
                (width (- agent-shell-overview-vertical-width (length indent) 2))
                (start (point)))
     (cl-flet ((right (text used)
@@ -1552,7 +1610,7 @@ of its detail and idle time."
                                          (string-width detail)))
                                (+ (length indent) width) detail)
                               detail))))))
-      (insert " " (agent-shell-overview--number-cell number) " "
+      (insert " " (agent-shell-overview--number-cell number) (if nested "   " " ")
               (propertize glyph 'face face)
               ;; The title starts on its column, after a glyph of any width.
               (agent-shell-overview--align 1 (length indent) ""))
@@ -1671,7 +1729,10 @@ the first cell alone, as a line that is no row."
   (when (and agent-shell-overview--sectioned
              (or (and id (eq agent-shell-overview--sectioned 'none))
                  (and (not id)
-                      (get-text-property 0 'agent-shell-overview-group (aref cells 0)))))
+                      ;; A project in the Parked group opens no section.
+                      (when-let* ((group (get-text-property
+                                          0 'agent-shell-overview-group (aref cells 0))))
+                        (not (consp group))))))
     (unless (bobp)
       (insert (if (eq agent-shell-overview--sectioned t)
                   (agent-shell-overview--separator)
@@ -1771,12 +1832,20 @@ on the same line when the row is gone."
                           (point-max))))
       (if-let* ((header (and (or (buffer-live-p id)
                                  (agent-shell-overview--entry-p id))
-                             (let ((project (agent-shell-overview--group id)))
+                             (let* ((project (agent-shell-overview--group id))
+                                    (grouped (agent-shell-overview--grouped-p))
+                                    (directory (and grouped (eq project 'parked)
+                                                    (agent-shell-overview--directory id)))
+                                    (sub (and directory
+                                              (cons 'parked
+                                                    (car (agent-shell-overview--location
+                                                          directory))))))
                                ;; Without project groups, only Parked has a header.
-                               (and (or (eq project 'parked)
-                                        (agent-shell-overview--grouped-p))
-                                    (member project agent-shell-overview--folded)
-                                    (agent-shell-overview--header-start project))))))
+                               (and (or (eq project 'parked) grouped)
+                                    (cond ((member project agent-shell-overview--folded)
+                                           (agent-shell-overview--header-start project))
+                                          ((member sub agent-shell-overview--folded)
+                                           (agent-shell-overview--header-start sub))))))))
           (goto-char header)
         (goto-char (point-min))
         (forward-line (1- line))
