@@ -30,7 +30,7 @@
 ;; `agent-shell-overview-memory-mode' adds a Mem column to the
 ;; overview of `agent-shell-overview', after the session title: the
 ;; memory each agent uses, as the summed resident set size of the
-;; process tree of its agent process, such as "850M", "1.2G" or "12G".
+;; process tree of its agent process, such as "0.8G", "1.2G" or "12G".
 ;;
 ;;   (add-to-list 'load-path "/path/to/agent-shell-overview/extras")
 ;;   (require 'agent-shell-overview-memory)
@@ -151,11 +151,11 @@ from a timer and a sentinel."
                   (error (setq agent-shell-overview-memory--sample nil)))))))))
 
 (defun agent-shell-overview-memory--size (kb)
-  "Return KB kilobytes as \"850M\", \"1.0G\" or \"12G\".
-Below 1 GiB in whole MiB, below 10 GiB in GiB with one decimal, and in
-whole GiB above.  The result is empty when KB is nil."
+  "Return KB kilobytes as \"0.8G\" or \"12G\".
+Below 10 GiB in GiB with one decimal, and in whole GiB above, so that
+the sizes of a column compare at a glance.  The result is empty when KB
+is nil."
   (cond ((null kb) "")
-        ((< kb 1048576) (format "%dM" (/ kb 1024)))
         ;; From 9.95 GiB, one decimal would round up to "10.0G".
         ((< kb (* 9.95 1048576)) (format "%.1fG" (/ kb 1048576.0)))
         (t (format "%dG" (round kb 1048576)))))

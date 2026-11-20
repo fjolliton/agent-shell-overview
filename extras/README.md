@@ -135,7 +135,7 @@ lookup with its default command.
 
 `agent-shell-overview-memory-mode` adds a Mem column after the session title:
 the memory each agent uses, as the summed RSS of the whole process tree of its
-agent process, such as `850M`, `1.0G` or `12G`. The cell is empty when the
+agent process, such as `0.8G`, `1.0G` or `12G`. The cell is empty when the
 size is unknown, as for a killed shell or before the first sample.
 
 `agent-shell-overview-memory-interval`, 10 by default, is the least number of
